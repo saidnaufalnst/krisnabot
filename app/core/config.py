@@ -42,19 +42,29 @@ class Settings:
         )
     )
     cors_origin_regex: str = os.getenv("CORS_ORIGIN_REGEX", "")
+    krisnabot_service_key: str = os.getenv("KRISNABOT_SERVICE_KEY", "")
+    krisnabot_require_chat_key: bool = _parse_bool(os.getenv("KRISNABOT_REQUIRE_CHAT_KEY", "false"))
 
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_chat_api_key: str = os.getenv("GEMINI_CHAT_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
     model_name: str = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-    file_search_model_name: str = os.getenv("FILE_SEARCH_MODEL_NAME", os.getenv("MODEL_NAME", "gemini-2.5-flash"))
-    file_search_fallback_model_name: str = os.getenv("FILE_SEARCH_FALLBACK_MODEL_NAME", "")
-    file_search_store_name: str = os.getenv("FILE_SEARCH_STORE_NAME", "")
-    file_search_store_display_name: str = os.getenv("FILE_SEARCH_STORE_DISPLAY_NAME", "krisnabot-store")
-    file_search_top_k: int = int(os.getenv("FILE_SEARCH_TOP_K", "8"))
+    file_search_store: str = os.getenv("FILE_SEARCH_STORE", "").strip() or "krisnabot-store"
+
+    file_search_top_k: int = int(os.getenv("FILE_SEARCH_TOP_K", "5"))
+    file_search_max_tokens_per_chunk: int = int(os.getenv("FILE_SEARCH_MAX_TOKENS_PER_CHUNK", "300"))
+    file_search_max_overlap_tokens: int = int(os.getenv("FILE_SEARCH_MAX_OVERLAP_TOKENS", "40"))
+
     file_search_poll_interval_seconds: float = float(os.getenv("FILE_SEARCH_POLL_INTERVAL_SECONDS", "2"))
     file_search_operation_timeout_seconds: float = float(os.getenv("FILE_SEARCH_OPERATION_TIMEOUT_SECONDS", "300"))
-    chat_max_output_tokens: int = int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "400"))
-    chat_retry_on_empty_answer: bool = _parse_bool(os.getenv("CHAT_RETRY_ON_EMPTY_ANSWER", "true"))
+    file_search_document_poll_interval_seconds: float = float(
+        os.getenv("FILE_SEARCH_DOCUMENT_POLL_INTERVAL_SECONDS", "2")
+    )
+    file_search_document_ready_timeout_seconds: float = float(
+        os.getenv("FILE_SEARCH_DOCUMENT_READY_TIMEOUT_SECONDS", "300")
+    )
+    chat_max_output_tokens: int = int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "600"))
+    chat_request_timeout_seconds: float = float(os.getenv("CHAT_REQUEST_TIMEOUT_SECONDS", "60"))
+    chat_retry_attempts: int = int(os.getenv("CHAT_RETRY_ATTEMPTS", "2"))
+    chat_retry_backoff_seconds: float = float(os.getenv("CHAT_RETRY_BACKOFF_SECONDS", "1"))
     technical_help_contact: str = os.getenv("TECHNICAL_HELP_CONTACT", "admin/helpdesk KRISNA di instansi Anda")
 
 

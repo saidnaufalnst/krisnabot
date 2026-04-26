@@ -1,6 +1,9 @@
 import unittest
 
+from google.genai.errors import ServerError
+
 from app.core.config import settings
+from app.services.gemini_file_search_service import GeminiFileSearchService
 from app.services.rag_service import RAGService
 
 
@@ -8,14 +11,15 @@ class RAGServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.rag = RAGService()
         self.rag._log_chat = lambda *args, **kwargs: None
+        self.rag._retry_backoff_seconds = 0
 
     def override_setting(self, name: str, value) -> None:
         previous = getattr(settings, name)
         object.__setattr__(settings, name, value)
         self.addCleanup(object.__setattr__, settings, name, previous)
 
-    def test_detect_social_response_returns_greeting(self) -> None:
-        result = self.rag._detect_social_response("halo")
+    def test_detect_social_returns_greeting(self) -> None:
+        result = self.rag._detect_social("halo")
 
         self.assertIsNotNone(result)
         self.assertTrue(result["found"])
@@ -33,6 +37,7 @@ class RAGServiceTests(unittest.TestCase):
         self.assertFalse(result["found"])
         self.assertEqual(result["answer"], "")
         self.assertEqual(result["error"], "context_not_found")
+        self.assertIn("helpdesk", result["message"])
         self.assertEqual(result["used_files"], [])
 
     def test_ask_uses_file_search_result_and_preserves_used_files(self) -> None:
@@ -41,7 +46,7 @@ class RAGServiceTests(unittest.TestCase):
             (),
             {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
         )()
-        self.rag._generate_answer_with_file_search = lambda prompt: {
+        self.rag._generate_answer = lambda prompt: {
             "found": True,
             "answer": "KRISNA adalah aplikasi perencanaan.",
             "message": "",
@@ -56,8 +61,7 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(result["message"], "")
         self.assertEqual(result["used_files"], ["Manual.pdf"])
 
-    def test_ask_does_not_retry_when_retry_disabled(self) -> None:
-        self.override_setting("chat_retry_on_empty_answer", False)
+    def test_ask_does_not_retry_when_answer_empty(self) -> None:
         self.rag.ingestion = type(
             "DummyIngestion",
             (),
@@ -76,17 +80,17 @@ class RAGServiceTests(unittest.TestCase):
                 "used_files": ["Manual.pdf"],
             }
 
-        self.rag._generate_answer_with_file_search = fake_generate
+        self.rag._generate_answer = fake_generate
 
         result = self.rag.ask("Apa itu KRISNA?")
 
         self.assertEqual(len(calls), 1)
         self.assertFalse(result["found"])
         self.assertEqual(result["error"], "empty_model_text")
+        self.assertIn("helpdesk", result["message"])
         self.assertEqual(result["used_files"], [])
 
-    def test_ask_retries_once_when_answer_empty_but_used_files_present(self) -> None:
-        self.override_setting("chat_retry_on_empty_answer", True)
+    def test_ask_returns_empty_model_text_without_second_generation(self) -> None:
         self.rag.ingestion = type(
             "DummyIngestion",
             (),
@@ -113,30 +117,64 @@ class RAGServiceTests(unittest.TestCase):
                 "used_files": ["Manual.pdf"],
             }
 
-        self.rag._generate_answer_with_file_search = fake_generate
+        self.rag._generate_answer = fake_generate
 
         result = self.rag.ask("Apa itu KRISNA?")
 
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(result["found"])
-        self.assertEqual(result["answer"], "KRISNA adalah aplikasi perencanaan dan penganggaran.")
-        self.assertEqual(result["used_files"], ["Manual.pdf"])
-
-    def test_ask_returns_out_of_scope_for_non_krisna_question(self) -> None:
-        result = self.rag.ask("Siapa presiden Indonesia saat ini?")
-
+        self.assertEqual(len(calls), 1)
         self.assertFalse(result["found"])
-        self.assertEqual(result["answer"], "")
-        self.assertEqual(result["error"], "out_of_scope_question")
+        self.assertEqual(result["error"], "empty_model_text")
+        self.assertIn("helpdesk", result["message"])
         self.assertEqual(result["used_files"], [])
 
-    def test_ask_routes_unanswered_technical_question_to_helpdesk(self) -> None:
+    def test_ask_retries_once_with_recovery_prompt_when_grounding_missing(self) -> None:
         self.rag.ingestion = type(
             "DummyIngestion",
             (),
             {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
         )()
-        self.rag._generate_answer_with_file_search = lambda prompt: {
+
+        calls: list[str] = []
+
+        def fake_generate(prompt: str):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {
+                    "found": False,
+                    "answer": "",
+                    "message": "Saya belum bisa memastikan rujukan jawaban dari dokumen, jadi jawaban tidak saya tampilkan.",
+                    "error": "missing_grounding_metadata",
+                    "used_files": [],
+                }
+            return {
+                "found": True,
+                "answer": "Untuk menambah Rincian Output, buka menu terkait lalu klik Tambah Data.",
+                "message": "",
+                "error": "",
+                "used_files": ["Manual.pdf"],
+            }
+
+        self.rag._generate_answer = fake_generate
+
+        result = self.rag.ask("Saya tidak bisa menambah rincian output")
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Pertanyaan pengguna:", calls[0])
+        self.assertIn("Pertanyaan atau keluhan pengguna:", calls[1])
+        self.assertTrue(result["found"])
+        self.assertEqual(
+            result["answer"],
+            "Untuk menambah Rincian Output, buka menu terkait lalu klik Tambah Data.",
+        )
+        self.assertEqual(result["used_files"], ["Manual.pdf"])
+
+    def test_ask_preserves_context_not_found_for_unanswered_question(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
+        )()
+        self.rag._generate_answer = lambda prompt: {
             "found": False,
             "answer": "",
             "message": "Saya belum menemukan rujukan yang cukup relevan pada dokumen yang tersedia.",
@@ -147,17 +185,195 @@ class RAGServiceTests(unittest.TestCase):
         result = self.rag.ask("Kenapa login KRISNA error 403?")
 
         self.assertFalse(result["found"])
-        self.assertEqual(result["error"], "technical_help_required")
+        self.assertEqual(result["error"], "context_not_found")
         self.assertIn("helpdesk", result["message"])
 
-    def test_generate_answer_with_file_search_uses_fallback_model_on_retryable_error(self) -> None:
-        self.override_setting("file_search_model_name", "primary-model")
-        self.override_setting("file_search_fallback_model_name", "fallback-model")
-        self.override_setting("model_name", "primary-model")
+    def test_ask_returns_greeting_for_random_input(self) -> None:
+        result = self.rag.ask("tes")
+
+        self.assertTrue(result["found"])
+        self.assertIn("KRISNABOT", result["answer"])
+        self.assertEqual(result["message"], "")
+        self.assertEqual(result["used_files"], [])
+        self.assertEqual(result["grounding_chunks"], [])
+
+    def test_ask_returns_greeting_for_single_character_input(self) -> None:
+        result = self.rag.ask("p")
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["answer"], "Halo, saya KRISNABOT. Silakan ajukan pertanyaan terkait KRISNA.")
+
+    def test_ask_returns_greeting_for_casual_phrase(self) -> None:
+        result = self.rag.ask("Apa kabar")
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["answer"], "Halo, saya KRISNABOT. Silakan ajukan pertanyaan terkait KRISNA.")
+        self.assertEqual(result["message"], "")
+
+    def test_ask_redirects_grounded_unanswered_krisna_answer_to_helpdesk(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
+        )()
+        self.rag._generate_answer = lambda prompt: {
+            "found": True,
+            "answer": "Jawaban belum tersedia di dokumen KRISNA.",
+            "message": "",
+            "error": "",
+            "used_files": ["Manual.pdf"],
+        }
+
+        result = self.rag.ask("Apa syarat khusus di KRISNA?")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "context_not_found")
+        self.assertIn("helpdesk", result["message"])
+        self.assertEqual(result["used_files"], [])
+
+    def test_build_prompt_uses_semantic_retrieval_instruction(self) -> None:
+        prompt = self.rag._build_prompt("Apa itu KRISNA?")
+
+        self.assertIn("Cari secara semantik", prompt)
+        self.assertIn("pertanyaan definisi", prompt)
+        self.assertIn("keluhan atau masalah", prompt)
+        self.assertIn("langkah, menu, form, tombol, status, field, atau syarat", prompt)
+        self.assertIn("Tetap pada objek yang ditanyakan", prompt)
+        self.assertIn("Jangan melebar ke data atau proses lain", prompt)
+        self.assertIn("jelas, padat, dan relevan", prompt)
+        self.assertIn("lokasi menu, nama tombol, atau isian form", prompt)
+        self.assertIn("Apa itu KRISNA?", prompt)
+        self.assertNotIn("Istilah terkait untuk pencarian", prompt)
+
+    def test_build_recovery_prompt_avoids_unrelated_expansion(self) -> None:
+        prompt = self.rag._build_recovery_prompt("Bagaimana cara menambah kegiatan?")
+
+        self.assertIn("Jangan mengasumsikan maksud lain", prompt)
+        self.assertIn("jangan melebar ke proses atau data lain", prompt)
+        self.assertIn("lokasi menu, nama tombol", prompt)
+
+    def test_clean_answer_preserves_simple_markdown(self) -> None:
+        raw_answer = (
+            "1. **Akses Halaman:** Pilih menu `RKP`, lalu klik *Tambah Data*.\n"
+            "* Hak Akses: Admin mengatur role *viewer* dan *submit*.\n\n"
+            "Catatan: * Jika data belum muncul, hubungi admin."
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            (
+                "1. **Akses Halaman:** Pilih menu `RKP`, lalu klik *Tambah Data*.\n"
+                "- Hak Akses: Admin mengatur role *viewer* dan *submit*.\n\n"
+                "**Catatan:** Jika data belum muncul, hubungi admin."
+            ),
+        )
+
+    def test_clean_answer_bolds_catatan_penting_label(self) -> None:
+        raw_answer = (
+            "Catatan penting:\n"
+            "* Kode KRO dan nomenklatur akan terisi otomatis."
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            (
+                "**Catatan penting:**\n"
+                "- Kode KRO dan nomenklatur akan terisi otomatis."
+            ),
+        )
+
+    def test_clean_answer_removes_information_and_procedure_labels(self) -> None:
+        raw_answer = (
+            "Informasi: Penambahan nomenklatur kegiatan tidak dapat dilakukan secara mandiri.\n\n"
+            "Prosedur:\n"
+            "1. Pimpinan K/L mengirimkan surat permohonan perubahan kegiatan.\n"
+            "2. Admin Pusat melakukan input data setelah mendapat persetujuan."
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            (
+                "Penambahan nomenklatur kegiatan tidak dapat dilakukan secara mandiri.\n\n"
+                "1. Pimpinan K/L mengirimkan surat permohonan perubahan kegiatan.\n"
+                "2. Admin Pusat melakukan input data setelah mendapat persetujuan."
+            ),
+        )
+
+    def test_clean_answer_trims_incomplete_tail(self) -> None:
+        raw_answer = (
+            "1. **Akses Menu:** Pilih menu RKP.\n"
+            "2. **Tambah Data:** Klik tombol **Tambah Data**.\n\n"
+            "**Catatan:** Data akan berstatus `pending-add`. "
+            "Pengguna yang berwenang adalah PJ RKP, PJ PN, atau"
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            (
+                "1. **Akses Menu:** Pilih menu RKP.\n"
+                "2. **Tambah Data:** Klik tombol **Tambah Data**.\n\n"
+                "**Catatan:** Data akan berstatus `pending-add`."
+            ),
+        )
+
+    def test_clean_answer_trims_dangling_list_marker(self) -> None:
+        raw_answer = (
+            "Berdasarkan dokumen KRISNA, terdapat dua cara yang dijelaskan terkait penambahan RO:\n\n"
+            "1."
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            "Berdasarkan dokumen KRISNA, terdapat dua cara yang dijelaskan terkait penambahan RO:",
+        )
+
+    def test_clean_answer_removes_duplicate_cited_tail(self) -> None:
+        raw_answer = (
+            "Untuk menambah Rincian Output (RO) di KRISNA, Anda dapat melakukannya dengan beberapa cara:\n\n"
+            "**Menambah Data Rincian Output Secara Manual:**\n"
+            "Pada halaman tabel Klasifikasi Rincian Output, lakukan *drill down*.\n"
+            "Setelah masuk ke halaman Rincian Output, klik tombol Tambah Data.\n"
+            "Akan muncul formulir Tambah Data.\n\n"
+            "[Untuk menambah Rincian Output (RO) di KRISNA, Anda dapat melakukannya dengan beberapa cara:\n"
+            "**Menambah Data Rincian Output Secara Manual:**\n"
+            "Pada halaman tabel Klasifikasi Rincian Output, lakukan *drill down*. [cite: 3]\n"
+            "Setelah masuk ke halaman Rincian Output, klik tombol Tambah Data. [cite: 3]\n"
+            "Akan muncul formulir Tambah Data. [cite: 3]"
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            (
+                "Untuk menambah Rincian Output (RO) di KRISNA, Anda dapat melakukannya dengan beberapa cara:\n\n"
+                "**Menambah Data Rincian Output Secara Manual:**\n"
+                "Pada halaman tabel Klasifikasi Rincian Output, lakukan *drill down*.\n"
+                "Setelah masuk ke halaman Rincian Output, klik tombol Tambah Data.\n"
+                "Akan muncul formulir Tambah Data."
+            ),
+        )
+
+    def test_generate_answer_uses_model_name(self) -> None:
+        self.override_setting("model_name", "configured-model")
         self.rag.file_search_service = type(
             "DummyFileSearchService",
             (),
             {
+                "extract_grounding_chunks": staticmethod(
+                    lambda response: [{"source_file": "Manual.pdf", "text": "Jawaban dari configured model."}]
+                ),
                 "extract_used_files": staticmethod(lambda response: ["Manual.pdf"]),
                 "has_grounding": staticmethod(lambda response: True),
             },
@@ -165,23 +381,305 @@ class RAGServiceTests(unittest.TestCase):
 
         calls: list[str] = []
 
-        def fake_call(prompt: str, model_name: str):
-            del prompt
-            calls.append(model_name)
-            if model_name == "primary-model":
-                raise Exception(
-                    "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand.'}}"
-                )
-            return type("Response", (), {"text": "Jawaban dari fallback."})()
+        def fake_generate_content(*, model: str, contents: str, config):
+            del contents, config
+            calls.append(model)
+            return type("Response", (), {"text": "Jawaban dari configured model."})()
 
-        self.rag._call_file_search_model = fake_call
+        self.rag._get_store_names = lambda: ["fileSearchStores/test"]
+        self.rag.client = type(
+            "DummyClient",
+            (),
+            {
+                "models": type(
+                    "DummyModels",
+                    (),
+                    {"generate_content": staticmethod(fake_generate_content)},
+                )()
+            },
+        )()
 
-        result = self.rag._generate_answer_with_file_search("Apa itu KRISNA?")
+        result = self.rag._generate_answer("Apa itu KRISNA?")
 
-        self.assertEqual(calls, ["primary-model", "fallback-model"])
+        self.assertEqual(calls, ["configured-model"])
         self.assertTrue(result["found"])
-        self.assertEqual(result["answer"], "Jawaban dari fallback.")
+        self.assertEqual(result["answer"], "Jawaban dari configured model.")
         self.assertEqual(result["used_files"], ["Manual.pdf"])
+
+    def test_file_search_service_extracts_grounding_chunk_text(self) -> None:
+        service = GeminiFileSearchService.__new__(GeminiFileSearchService)
+        retrieved_context = type("RetrievedContext", (), {"text": "Isi potongan sumber dari dokumen."})()
+        chunk = type("GroundingChunk", (), {"retrieved_context": retrieved_context})()
+        grounding_metadata = type("GroundingMetadata", (), {"grounding_chunks": [chunk]})()
+        candidate = type("Candidate", (), {"grounding_metadata": grounding_metadata})()
+        response = type("Response", (), {"candidates": [candidate]})()
+
+        self.assertEqual(
+            service.extract_grounding_chunks(response),
+            [{"source_file": "", "text": "Isi potongan sumber dari dokumen."}],
+        )
+        self.assertTrue(service.has_grounding(response))
+
+    def test_file_search_service_extracts_grounding_chunk_text_from_rest_shape(self) -> None:
+        service = GeminiFileSearchService.__new__(GeminiFileSearchService)
+        response = {
+            "candidates": [
+                {
+                    "groundingMetadata": {
+                        "groundingChunks": [
+                            {
+                                "retrievedContext": {
+                                    "text": "Teks dari bentuk JSON REST.",
+                                    "title": "Fallback.pdf",
+                                    "customMetadata": [
+                                        {"key": "source_file", "stringValue": "Manual.pdf"}
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(service.extract_used_files(response), ["Manual.pdf"])
+        self.assertEqual(
+            service.extract_grounding_chunks(response),
+            [{"source_file": "Manual.pdf", "text": "Teks dari bentuk JSON REST."}],
+        )
+        self.assertTrue(service.has_grounding(response))
+
+    def test_file_search_service_builds_chunking_config_from_settings(self) -> None:
+        self.override_setting("file_search_max_tokens_per_chunk", 240)
+        self.override_setting("file_search_max_overlap_tokens", 30)
+
+        chunking_config = GeminiFileSearchService._chunking_config()
+
+        self.assertIsNotNone(chunking_config)
+        self.assertEqual(chunking_config.white_space_config.max_tokens_per_chunk, 240)
+        self.assertEqual(chunking_config.white_space_config.max_overlap_tokens, 30)
+
+    def test_parse_response_accepts_grounding_chunk_text_without_source_file(self) -> None:
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {
+                "extract_grounding_chunks": staticmethod(
+                    lambda response: [{"source_file": "", "text": "Langkah menambah RO ada di menu Rincian Output."}]
+                ),
+                "extract_used_files": staticmethod(lambda response: []),
+                "has_grounding": staticmethod(lambda response: True),
+            },
+        )()
+        response = type("Response", (), {"text": "Untuk menambah RO, gunakan menu Rincian Output."})()
+
+        result = self.rag._parse_response(response)
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["answer"], "Untuk menambah RO, gunakan menu Rincian Output.")
+        self.assertEqual(result["used_files"], [])
+        self.assertEqual(
+            result["grounding_chunks"],
+            [{"source_file": "", "text": "Langkah menambah RO ada di menu Rincian Output."}],
+        )
+
+    def test_parse_response_rejects_answer_without_grounding_metadata(self) -> None:
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {
+                "extract_grounding_chunks": staticmethod(lambda response: []),
+                "extract_used_files": staticmethod(lambda response: []),
+                "has_grounding": staticmethod(lambda response: False),
+            },
+        )()
+        response = type("Response", (), {"text": "Jawaban dari File Search tanpa metadata sumber."})()
+
+        result = self.rag._parse_response(response)
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "missing_grounding_metadata")
+        self.assertEqual(result["used_files"], [])
+        self.assertNotIn("lebih spesifik", result["message"])
+
+    def test_parse_response_does_not_treat_search_queries_as_grounding(self) -> None:
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {
+                "extract_grounding_chunks": staticmethod(lambda response: []),
+                "extract_used_files": staticmethod(lambda response: []),
+                "has_grounding": staticmethod(lambda response: False),
+            },
+        )()
+        grounding_metadata = type(
+            "GroundingMetadata",
+            (),
+            {
+                "grounding_chunks": [],
+                "web_search_queries": ["Apa itu KRISNA?"],
+                "grounding_supports": [object()],
+            },
+        )()
+        candidate = type("Candidate", (), {"grounding_metadata": grounding_metadata})()
+        response = type(
+            "Response",
+            (),
+            {
+                "text": "KRISNA adalah aplikasi perencanaan dan penganggaran.",
+                "candidates": [candidate],
+            },
+        )()
+
+        result = self.rag._parse_response(response)
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "missing_grounding_metadata")
+        self.assertNotIn("lebih spesifik", result["message"])
+
+    def test_parse_response_preserves_grounded_no_answer_text(self) -> None:
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {
+                "extract_grounding_chunks": staticmethod(
+                    lambda response: [{"source_file": "Manual.pdf", "text": "Tidak ada jawaban di bagian ini."}]
+                ),
+                "extract_used_files": staticmethod(lambda response: ["Manual.pdf"]),
+                "has_grounding": staticmethod(lambda response: True),
+            },
+        )()
+        response = type("Response", (), {"text": "Jawaban belum tersedia di dokumen KRISNA."})()
+
+        result = self.rag._parse_response(response)
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["answer"], "Jawaban belum tersedia di dokumen KRISNA.")
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["used_files"], ["Manual.pdf"])
+        self.assertEqual(
+            result["grounding_chunks"],
+            [{"source_file": "Manual.pdf", "text": "Tidak ada jawaban di bagian ini."}],
+        )
+        self.assertEqual(result["message"], "")
+
+    def test_generate_answer_reports_missing_model_name(self) -> None:
+        self.override_setting("model_name", "")
+
+        result = self.rag._generate_answer("Apa itu KRISNA?")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "model_not_found")
+        self.assertIn("MODEL_NAME", result["message"])
+
+    def test_generate_answer_treats_504_deadline_as_provider_unavailable(self) -> None:
+        self.override_setting("model_name", "configured-model")
+
+        def fake_call(prompt: str, model_name: str, store_names: list[str]):
+            del prompt, model_name, store_names
+            raise Exception(
+                "504 DEADLINE_EXCEEDED. {'error': {'code': 504, "
+                "'message': 'Deadline expired before operation could complete.'}}"
+            )
+
+        self.rag._get_store_names = lambda: ["fileSearchStores/test"]
+        self.rag._call_model = fake_call
+
+        result = self.rag._generate_answer("Saya tidak bisa menambah kegiatan KRISNA Renja")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "provider_unavailable")
+        self.assertNotIn("DEADLINE_EXCEEDED", result["message"])
+
+    def test_generate_answer_treats_server_error_503_as_provider_unavailable(self) -> None:
+        self.override_setting("model_name", "configured-model")
+        calls = {"count": 0}
+
+        def fake_call(prompt: str, model_name: str, store_names: list[str]):
+            del prompt, model_name, store_names
+            calls["count"] += 1
+            raise ServerError(
+                503,
+                {
+                    "error": {
+                        "code": 503,
+                        "message": "This model is currently experiencing high demand.",
+                        "status": "UNAVAILABLE",
+                    }
+                },
+            )
+
+        self.rag._get_store_names = lambda: ["fileSearchStores/test"]
+        self.rag._call_model = fake_call
+
+        result = self.rag._generate_answer("Apa itu KRISNA?")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "provider_unavailable")
+        self.assertEqual(calls["count"], self.rag._retry_attempts + 1)
+
+    def test_generate_answer_retries_503_then_succeeds(self) -> None:
+        self.override_setting("model_name", "configured-model")
+        calls = {"count": 0}
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {
+                "extract_grounding_chunks": staticmethod(
+                    lambda response: [{"source_file": "Manual.pdf", "text": "Langkah ada di menu Rincian Output."}]
+                ),
+                "extract_used_files": staticmethod(lambda response: ["Manual.pdf"]),
+                "has_grounding": staticmethod(lambda response: True),
+            },
+        )()
+
+        def fake_call(prompt: str, model_name: str, store_names: list[str]):
+            del prompt, model_name, store_names
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise ServerError(
+                    503,
+                    {
+                        "error": {
+                            "code": 503,
+                            "message": "This model is currently experiencing high demand.",
+                            "status": "UNAVAILABLE",
+                        }
+                    },
+                )
+            return type("Response", (), {"text": "Buka menu Rincian Output lalu klik Tambah Data."})()
+
+        self.rag._get_store_names = lambda: ["fileSearchStores/test"]
+        self.rag._call_model = fake_call
+
+        result = self.rag._generate_answer("Bagaimana cara menambah rincian output?")
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["answer"], "Buka menu Rincian Output lalu klik Tambah Data.")
+        self.assertEqual(result["used_files"], ["Manual.pdf"])
+        self.assertEqual(calls["count"], 2)
+
+    def test_generate_answer_redacts_unexpected_error_message(self) -> None:
+        self.override_setting("model_name", "configured-model")
+
+        def fake_call(prompt: str, model_name: str, store_names: list[str]):
+            del prompt, model_name, store_names
+            raise RuntimeError("internal provider payload with sensitive detail")
+
+        self.rag._get_store_names = lambda: ["fileSearchStores/test"]
+        self.rag._call_model = fake_call
+
+        result = self.rag._generate_answer("Apa itu KRISNA?")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "unexpected_generation_error")
+        self.assertNotIn("sensitive detail", result["message"])
 
 
 if __name__ == "__main__":

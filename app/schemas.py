@@ -13,6 +13,7 @@ class ChatResponse(BaseModel):
     found: bool
     used_files: list[str]
     error: str = ""
+    grounding_chunks: list[dict[str, str]] = Field(default_factory=list)
 
 
 class IngestResponse(BaseModel):

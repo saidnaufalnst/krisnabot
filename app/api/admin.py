@@ -1,12 +1,17 @@
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
+from app.core.service_auth import require_admin_service_key
 from app.schemas import AdminStatusResponse, FileActionResponse, IngestResponse, UploadResponse
 from app.services.ingest_job_manager import ingest_job_manager
 from app.services.ingestion_service import IngestionService
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin_service_key)],
+)
 logger = logging.getLogger(__name__)
 
 
