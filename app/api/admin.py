@@ -29,11 +29,23 @@ def admin_status() -> AdminStatusResponse:
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_docs(files: list[UploadFile] = File(...)) -> UploadResponse:
+async def upload_docs(
+    files: list[UploadFile] | None = File(None),
+    file: UploadFile | None = File(None),
+) -> UploadResponse:
     try:
         ingestion_service = get_ingestion_service()
         payloads: list[tuple[str, bytes]] = []
-        for uploaded_file in files:
+        uploaded_files = list(files or [])
+        if file is not None:
+            uploaded_files.append(file)
+        if not uploaded_files:
+            raise HTTPException(
+                status_code=422,
+                detail="Field upload wajib diisi pada multipart form dengan nama 'files' atau 'file'.",
+            )
+
+        for uploaded_file in uploaded_files:
             if uploaded_file.content_type != "application/pdf":
                 raise HTTPException(
                     status_code=400,

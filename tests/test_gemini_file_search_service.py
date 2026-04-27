@@ -53,6 +53,23 @@ class GeminiFileSearchServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "gagal diproses"):
             self.service._wait_for_document_active("fileSearchStores/store/documents/manual")
 
+    def test_wait_for_document_active_accepts_enum_like_state_string(self) -> None:
+        self.override_setting("file_search_document_poll_interval_seconds", 0.2)
+        self.override_setting("file_search_document_ready_timeout_seconds", 5)
+
+        self.service.client = SimpleNamespace(
+            file_search_stores=SimpleNamespace(
+                documents=SimpleNamespace(
+                    get=lambda *, name: SimpleNamespace(name=name, state="DocumentState.STATE_ACTIVE")
+                ),
+            )
+        )
+
+        with patch("app.services.gemini_file_search_service.time.sleep", lambda _: None):
+            document = self.service._wait_for_document_active("fileSearchStores/store/documents/manual")
+
+        self.assertEqual(document.state, "DocumentState.STATE_ACTIVE")
+
     def test_upload_document_uses_document_name_from_operation_response_name(self) -> None:
         uploaded: dict[str, object] = {}
         waited: list[str] = []

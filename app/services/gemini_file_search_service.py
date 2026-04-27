@@ -165,7 +165,14 @@ class GeminiFileSearchService:
         state = GeminiFileSearchService._field_value(document, "state")
         if state is None:
             return ""
-        return str(state).strip().upper()
+        enum_name = getattr(state, "name", None)
+        if enum_name:
+            return str(enum_name).strip().upper()
+
+        normalized = str(state).strip()
+        if "." in normalized:
+            normalized = normalized.rsplit(".", 1)[-1]
+        return normalized.upper()
 
     @staticmethod
     def _document_name_from_operation_response(response: Any) -> str:
