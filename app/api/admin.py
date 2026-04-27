@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from app.core.service_auth import require_admin_service_key
 from app.schemas import AdminStatusResponse, FileActionResponse, IngestResponse, UploadResponse
 from app.services.ingest_job_manager import ingest_job_manager
-from app.services.ingestion_service import IngestionService
+from app.services.ingestion_service import get_ingestion_service
 
 router = APIRouter(
     prefix="/admin",
@@ -13,10 +13,6 @@ router = APIRouter(
     dependencies=[Depends(require_admin_service_key)],
 )
 logger = logging.getLogger(__name__)
-
-
-def get_ingestion_service() -> IngestionService:
-    return IngestionService()
 
 
 @router.get("/status", response_model=AdminStatusResponse)

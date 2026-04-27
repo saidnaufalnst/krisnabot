@@ -168,6 +168,68 @@ class RAGServiceTests(unittest.TestCase):
         )
         self.assertEqual(result["used_files"], ["Manual.pdf"])
 
+    def test_ask_retries_with_recovery_prompt_for_context_not_found_complaint(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
+        )()
+
+        calls: list[str] = []
+
+        def fake_generate(prompt: str):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {
+                    "found": False,
+                    "answer": "",
+                    "message": "Saya belum menemukan rujukan yang cukup relevan pada dokumen yang tersedia.",
+                    "error": "context_not_found",
+                    "used_files": [],
+                }
+            return {
+                "found": True,
+                "answer": "Periksa hak akses login dan pastikan akun Anda aktif.",
+                "message": "",
+                "error": "",
+                "used_files": ["Manual.pdf"],
+            }
+
+        self.rag._generate_answer = fake_generate
+
+        result = self.rag.ask("Kenapa login KRISNA error 403?")
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["found"])
+        self.assertEqual(result["used_files"], ["Manual.pdf"])
+
+    def test_ask_does_not_retry_recovery_prompt_for_definition_context_not_found(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
+        )()
+
+        calls: list[str] = []
+
+        def fake_generate(prompt: str):
+            calls.append(prompt)
+            return {
+                "found": False,
+                "answer": "",
+                "message": "Saya belum menemukan rujukan yang cukup relevan pada dokumen yang tersedia.",
+                "error": "context_not_found",
+                "used_files": [],
+            }
+
+        self.rag._generate_answer = fake_generate
+
+        result = self.rag.ask("Apa itu KRISNA?")
+
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(result["found"])
+        self.assertEqual(result["error"], "context_not_found")
+
     def test_ask_preserves_context_not_found_for_unanswered_question(self) -> None:
         self.rag.ingestion = type(
             "DummyIngestion",
@@ -252,6 +314,44 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIn("Jangan mengasumsikan maksud lain", prompt)
         self.assertIn("jangan melebar ke proses atau data lain", prompt)
         self.assertIn("lokasi menu, nama tombol", prompt)
+
+    def test_get_store_names_skips_known_store_lookup_when_no_index_exists(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {
+                "list_file_search_store_names": staticmethod(lambda: []),
+                "list_indexed_files": staticmethod(lambda: []),
+            },
+        )()
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {
+                "get_known_store_name": staticmethod(
+                    lambda: (_ for _ in ()).throw(AssertionError("known store lookup should not be called"))
+                )
+            },
+        )()
+
+        self.assertEqual(self.rag._get_store_names(), [])
+
+    def test_get_store_names_uses_known_store_when_index_exists(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {
+                "list_file_search_store_names": staticmethod(lambda: []),
+                "list_indexed_files": staticmethod(lambda: ["Manual.pdf"]),
+            },
+        )()
+        self.rag.file_search_service = type(
+            "DummyFileSearchService",
+            (),
+            {"get_known_store_name": staticmethod(lambda: "fileSearchStores/test")},
+        )()
+
+        self.assertEqual(self.rag._get_store_names(), ["fileSearchStores/test"])
 
     def test_clean_answer_preserves_simple_markdown(self) -> None:
         raw_answer = (
@@ -680,6 +780,11 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(result["answer"], "")
         self.assertEqual(result["error"], "unexpected_generation_error")
         self.assertNotIn("sensitive detail", result["message"])
+
+    def test_looks_like_unanswered_answer_matches_extended_indonesian_patterns(self) -> None:
+        self.assertTrue(self.rag._looks_like_unanswered_answer("Dokumen tidak memuat informasi tersebut."))
+        self.assertTrue(self.rag._looks_like_unanswered_answer("Hal ini tidak dijelaskan dalam dokumen."))
+        self.assertTrue(self.rag._looks_like_unanswered_answer("Jawaban ini tidak dapat saya temukan."))
 
 
 if __name__ == "__main__":

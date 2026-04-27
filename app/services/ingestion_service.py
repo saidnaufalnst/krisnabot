@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -18,9 +19,11 @@ class IngestionService:
         self.ingested_document_repository = IngestedDocumentRepository()
         self.ingest_checkpoint_repository = IngestCheckpointRepository()
         self.audit_repository = AuditRepository()
+        self._file_search_service: GeminiFileSearchService | None = None
+
+    def run_startup_cleanup(self) -> None:
         self._cleanup_orphaned_index_entries()
         self._cleanup_orphaned_checkpoints()
-        self._file_search_service: GeminiFileSearchService | None = None
 
     def _cleanup_orphaned_index_entries(self) -> None:
         existing_names = set(self.document_repository.list_source_files())
@@ -454,3 +457,8 @@ class IngestionService:
             "processed_files": total_files,
             "current_file": "",
         }
+
+
+@lru_cache(maxsize=1)
+def get_ingestion_service() -> IngestionService:
+    return IngestionService()

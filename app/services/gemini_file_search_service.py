@@ -292,6 +292,12 @@ class GeminiFileSearchService:
         _cached_store_name = store_name
         return store_name
 
+    def get_known_store_name(self) -> str:
+        configured_store = str(getattr(settings, "file_search_store", "") or "").strip()
+        if configured_store.startswith("fileSearchStores/"):
+            return configured_store
+        return _cached_store_name or ""
+
     def find_document_name_by_source_file(self, source_file: str, *, store_name: str | None = None) -> str | None:
         parent = store_name or self.get_or_create_store_name()
         try:

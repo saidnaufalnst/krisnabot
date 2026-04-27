@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from functools import lru_cache
 from typing import Any
 
 from google.genai import types
@@ -129,13 +130,13 @@ class RAGService:
                 names = self.ingestion.list_file_search_store_names()
             except Exception:
                 names = []
-            if not names:
+            if not names and self._get_indexed_files():
                 try:
-                    fallback = self.file_search_service.get_or_create_store_name()
+                    fallback = self.file_search_service.get_known_store_name()
                     if fallback:
                         names = [fallback]
                 except Exception as exc:
-                    logger.error("[RAG] get_or_create_store_name error: %s", exc)
+                    logger.warning("[RAG] get_known_store_name error: %s", exc)
             self._store_names_cache = names
             self._store_names_ts    = now
         return self._store_names_cache
@@ -231,8 +232,38 @@ class RAGService:
             r"\bbelum menemukan rujukan\b",
             r"\btidak ditemukan\b",
             r"\btidak tersedia\b",
+            r"\btidak ada informasi\b",
+            r"\bdokumen tidak memuat\b",
+            r"\btidak dijelaskan dalam dokumen\b",
+            r"\btidak dapat saya temukan\b",
         )
         return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+    def _should_retry_with_recovery_prompt(self, question: str, result: dict[str, Any]) -> bool:
+        error = str(result.get("error", "") or "")
+        if error == "missing_grounding_metadata":
+            return True
+        if error != "context_not_found":
+            return False
+
+        normalized = self._normalize(question)
+        if not normalized:
+            return False
+
+        recovery_hints = (
+            r"\bbagaimana\b",
+            r"\bcara\b",
+            r"\blangkah\b",
+            r"\bkenapa\b",
+            r"\bmengapa\b",
+            r"\btidak bisa\b",
+            r"\btidak dapat\b",
+            r"\bgagal\b",
+            r"\berror\b",
+            r"\bkendala\b",
+            r"\bmasalah\b",
+        )
+        return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in recovery_hints)
 
     @staticmethod
     def _looks_like_random_input(question: str) -> bool:
@@ -532,7 +563,7 @@ class RAGService:
 
         # Pass 2 — recovery prompt jika dokumen ada tapi grounding tidak terdeteksi
         # (membantu pertanyaan informal / keluhan yang kata-katanya tidak persis sama dengan dokumen)
-        if not result.get("found") and result.get("error") in {"context_not_found", "missing_grounding_metadata"}:
+        if not result.get("found") and self._should_retry_with_recovery_prompt(question, result):
             recovery = self._generate_answer(self._build_recovery_prompt(question))
             if recovery.get("found"):
                 result = recovery
@@ -564,3 +595,8 @@ class RAGService:
         }
         self._log_chat(question, final["answer"] or final["message"], final["found"], final["used_files"], final["error"])
         return final
+
+
+@lru_cache(maxsize=1)
+def get_rag_service() -> RAGService:
+    return RAGService()

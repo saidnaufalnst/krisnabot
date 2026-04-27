@@ -4,7 +4,8 @@ import threading
 from copy import deepcopy
 from typing import Any
 
-from app.services.ingestion_service import IngestionService
+from app.services.ingestion_service import get_ingestion_service
+from app.services.rag_service import get_rag_service
 
 
 class IngestJobManager:
@@ -104,7 +105,7 @@ class IngestJobManager:
                 self._state["message"] = f"Gagal ingest {file_name}: {event.get('error', 'unknown error')}"
 
     def _run_job(self, force: bool, source_files: list[str] | None) -> None:
-        service = IngestionService()
+        service = get_ingestion_service()
         try:
             result = service.upload_all(
                 force=force,
@@ -133,6 +134,11 @@ class IngestJobManager:
                 self._state["current_file_total_chunks"] = 0
                 self._state["resumed_from_chunk"] = 0
                 self._state["message"] = f"Ingest gagal: {exc}"
+        finally:
+            try:
+                get_rag_service().invalidate_cache()
+            except Exception:
+                pass
 
 
 ingest_job_manager = IngestJobManager()

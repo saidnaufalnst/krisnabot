@@ -1,19 +1,13 @@
 import logging
-from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.service_auth import require_chat_service_key
 from app.schemas import ChatRequest, ChatResponse
-from app.services.rag_service import RAGService
+from app.services.rag_service import get_rag_service
 
 router = APIRouter(prefix="/user", tags=["user"])
 logger = logging.getLogger(__name__)
-
-
-@lru_cache(maxsize=1)
-def get_rag_service() -> RAGService:
-    return RAGService()
 
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_chat_service_key)])
