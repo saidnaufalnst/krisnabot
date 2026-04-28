@@ -30,14 +30,14 @@ DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/krisnabot
 GEMINI_API_KEY=isi_api_key_gemini_anda
 MODEL_NAME=gemini-3.1-flash-lite-preview
 FILE_SEARCH_STORE=krisnabot-store
-FILE_SEARCH_TOP_K=5
-FILE_SEARCH_MAX_TOKENS_PER_CHUNK=300
-FILE_SEARCH_MAX_OVERLAP_TOKENS=40
+FILE_SEARCH_TOP_K=0
+FILE_SEARCH_MAX_TOKENS_PER_CHUNK=0
+FILE_SEARCH_MAX_OVERLAP_TOKENS=0
 FILE_SEARCH_POLL_INTERVAL_SECONDS=2
 FILE_SEARCH_OPERATION_TIMEOUT_SECONDS=300
 FILE_SEARCH_DOCUMENT_POLL_INTERVAL_SECONDS=2
 FILE_SEARCH_DOCUMENT_READY_TIMEOUT_SECONDS=300
-CHAT_MAX_OUTPUT_TOKENS=600
+CHAT_MAX_OUTPUT_TOKENS=0
 CHAT_REQUEST_TIMEOUT_SECONDS=60
 CHAT_RETRY_ATTEMPTS=2
 CHAT_RETRY_BACKOFF_SECONDS=1
@@ -47,7 +47,11 @@ KRISNABOT_REQUIRE_CHAT_KEY=false
 
 `FILE_SEARCH_STORE` bisa diisi display name seperti `krisnabot-store` atau resource name Gemini dengan format `fileSearchStores/...` agar backend tidak perlu lookup store saat cache kosong.
 
-`FILE_SEARCH_MAX_TOKENS_PER_CHUNK` dan `FILE_SEARCH_MAX_OVERLAP_TOKENS` dipakai saat ingest ke Gemini File Search. Jalankan ingest ulang agar perubahan chunking berlaku pada dokumen yang sudah pernah diindeks. Set `FILE_SEARCH_MAX_TOKENS_PER_CHUNK=0` jika ingin memakai default chunking Gemini.
+Nilai `0` pada `FILE_SEARCH_TOP_K`, `FILE_SEARCH_MAX_TOKENS_PER_CHUNK`, `FILE_SEARCH_MAX_OVERLAP_TOKENS`, dan `CHAT_MAX_OUTPUT_TOKENS` berarti backend tidak mengirim override sehingga request mengikuti default Gemini.
+
+Saat ingest, file PDF tetap disimpan di database lokal backend sebagai sumber utama. Backend memakai `upload_to_file_search_store` untuk mengirim file langsung ke Gemini File Search Store agar Gemini melakukan chunking, embedding, dan indexing. Data index/embedding di File Search Store tetap ada sampai dokumen index dihapus.
+
+Jika `FILE_SEARCH_MAX_TOKENS_PER_CHUNK` diisi lebih dari `0`, backend mengirim `chunking_config` saat ingest ke Gemini File Search. Jalankan ingest ulang agar perubahan chunking berlaku pada dokumen yang sudah pernah diindeks.
 
 Sesuai lifecycle `Document` di Gemini File Search, backend sekarang menunggu dokumen hasil upload benar-benar berstatus `ACTIVE` sebelum metadata indeks lokal disimpan. `FILE_SEARCH_DOCUMENT_POLL_INTERVAL_SECONDS` dan `FILE_SEARCH_DOCUMENT_READY_TIMEOUT_SECONDS` mengatur polling dan timeout tahap ini.
 
@@ -198,10 +202,11 @@ Jika jawaban tidak ditemukan, `answer` kosong dan pesan fallback dikirim melalui
 
 1. Admin upload PDF melalui UI KRISNA atau endpoint admin.
 2. File mentah masuk ke tabel `documents`.
-3. Saat ingest dijalankan, backend mengunggah file ke Gemini File Search store.
-4. Backend menunggu `Document` Gemini selesai diproses dan berstatus `ACTIVE`.
-5. Metadata remote disimpan di tabel `ingested_documents`.
-6. Saat user bertanya, backend memanggil Gemini `generate_content` dengan tool `file_search`.
+3. Saat ingest dijalankan, backend mengunggah file langsung ke Gemini File Search Store.
+4. Gemini File Search melakukan chunking, embedding, dan indexing.
+5. Backend menunggu `Document` Gemini selesai diproses dan berstatus `ACTIVE`.
+6. Metadata remote disimpan di tabel `ingested_documents`.
+7. Saat user bertanya, backend memanggil Gemini `generate_content` dengan tool `file_search`.
 
 ## Testing
 

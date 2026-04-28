@@ -21,6 +21,13 @@ def _parse_bool(value: str, default: bool = False) -> bool:
     return normalized in {"1", "true", "yes", "on"}
 
 
+def _parse_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    if raw_value == "":
+        return default
+    return int(raw_value)
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "KRISNABOT")
@@ -49,9 +56,9 @@ class Settings:
     model_name: str = os.getenv("MODEL_NAME", "gemini-2.5-flash")
     file_search_store: str = os.getenv("FILE_SEARCH_STORE", "").strip() or "krisnabot-store"
 
-    file_search_top_k: int = int(os.getenv("FILE_SEARCH_TOP_K", "5"))
-    file_search_max_tokens_per_chunk: int = int(os.getenv("FILE_SEARCH_MAX_TOKENS_PER_CHUNK", "300"))
-    file_search_max_overlap_tokens: int = int(os.getenv("FILE_SEARCH_MAX_OVERLAP_TOKENS", "40"))
+    file_search_top_k: int = _parse_int("FILE_SEARCH_TOP_K", 0)
+    file_search_max_tokens_per_chunk: int = _parse_int("FILE_SEARCH_MAX_TOKENS_PER_CHUNK", 0)
+    file_search_max_overlap_tokens: int = _parse_int("FILE_SEARCH_MAX_OVERLAP_TOKENS", 0)
 
     file_search_poll_interval_seconds: float = float(os.getenv("FILE_SEARCH_POLL_INTERVAL_SECONDS", "2"))
     file_search_operation_timeout_seconds: float = float(os.getenv("FILE_SEARCH_OPERATION_TIMEOUT_SECONDS", "300"))
@@ -61,7 +68,7 @@ class Settings:
     file_search_document_ready_timeout_seconds: float = float(
         os.getenv("FILE_SEARCH_DOCUMENT_READY_TIMEOUT_SECONDS", "300")
     )
-    chat_max_output_tokens: int = int(os.getenv("CHAT_MAX_OUTPUT_TOKENS", "600"))
+    chat_max_output_tokens: int = _parse_int("CHAT_MAX_OUTPUT_TOKENS", 0)
     chat_request_timeout_seconds: float = float(os.getenv("CHAT_REQUEST_TIMEOUT_SECONDS", "60"))
     chat_retry_attempts: int = int(os.getenv("CHAT_RETRY_ATTEMPTS", "2"))
     chat_retry_backoff_seconds: float = float(os.getenv("CHAT_RETRY_BACKOFF_SECONDS", "1"))

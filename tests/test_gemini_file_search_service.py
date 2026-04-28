@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -70,7 +71,20 @@ class GeminiFileSearchServiceTests(unittest.TestCase):
 
         self.assertEqual(document.state, "DocumentState.STATE_ACTIVE")
 
-    def test_upload_document_uses_document_name_from_operation_response_name(self) -> None:
+    def test_document_name_from_operation_response_expands_short_document_id(self) -> None:
+        response = SimpleNamespace(
+            parent="fileSearchStores/store",
+            document_name="manual-123",
+        )
+
+        document_name = self.service._document_name_from_operation_response(
+            response,
+            "fileSearchStores/fallback",
+        )
+
+        self.assertEqual(document_name, "fileSearchStores/store/documents/manual-123")
+
+    def test_upload_document_uses_direct_upload_to_file_search_store(self) -> None:
         uploaded: dict[str, object] = {}
         waited: list[str] = []
 
@@ -81,11 +95,11 @@ class GeminiFileSearchServiceTests(unittest.TestCase):
         self.service.client = SimpleNamespace(
             file_search_stores=SimpleNamespace(
                 upload_to_file_search_store=fake_upload_to_file_search_store,
-            )
+            ),
         )
         self.service.get_or_create_store_name = lambda: "fileSearchStores/store"
         self.service._wait_for_operation = lambda operation: SimpleNamespace(
-            response=SimpleNamespace(name="fileSearchStores/store/documents/manual-123")
+            response=SimpleNamespace(document_name="fileSearchStores/store/documents/manual-123")
         )
         self.service._wait_for_document_active = lambda document_name: waited.append(document_name)
 
@@ -99,8 +113,14 @@ class GeminiFileSearchServiceTests(unittest.TestCase):
         self.assertEqual(result["store_name"], "fileSearchStores/store")
         self.assertEqual(result["document_name"], "fileSearchStores/store/documents/manual-123")
         self.assertEqual(waited, ["fileSearchStores/store/documents/manual-123"])
-        self.assertEqual(uploaded["file_search_store_name"], "fileSearchStores/store")
         self.assertEqual(uploaded["config"].display_name, "manual.pdf")
+        self.assertEqual(uploaded["config"].mime_type, "application/pdf")
+        self.assertFalse(Path(str(uploaded["file"])).exists())
+        self.assertEqual(uploaded["file_search_store_name"], "fileSearchStores/store")
+        self.assertEqual(uploaded["config"].custom_metadata[0].key, "source_file")
+        self.assertEqual(uploaded["config"].custom_metadata[0].string_value, "manual.pdf")
+        self.assertEqual(uploaded["config"].custom_metadata[1].key, "sha256")
+        self.assertEqual(uploaded["config"].custom_metadata[1].string_value, "abc123")
 
 
 if __name__ == "__main__":

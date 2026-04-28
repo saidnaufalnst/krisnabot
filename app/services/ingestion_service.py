@@ -131,26 +131,23 @@ class IngestionService:
 
         try:
             existing_record = self.ingested_document_repository.get(source_file)
-            if existing_record is not None:
-                try:
-                    if existing_record.remote_document_name:
-                        self.file_search_service.delete_document(existing_record.remote_document_name)
-                    elif existing_record.file_search_store_name:
-                        self.file_search_service.delete_document_by_source_file(
-                            source_file,
-                            store_name=existing_record.file_search_store_name,
-                        )
-                except Exception:
-                    # Remote metadata can outlive the API key/project that created it.
-                    # Keep re-ingest moving so the current key can create a fresh index.
-                    pass
-
             upload_result = self.file_search_service.upload_document(
                 source_file=source_file,
                 content=content,
                 mime_type="application/pdf",
                 sha256=file_hash,
             )
+            if (
+                existing_record is not None
+                and existing_record.remote_document_name
+                and existing_record.remote_document_name != upload_result["document_name"]
+            ):
+                try:
+                    self.file_search_service.delete_document(existing_record.remote_document_name)
+                except Exception:
+                    # Remote metadata can outlive the API key/project that created it.
+                    # Keep re-ingest successful after the new document is ACTIVE.
+                    pass
 
             completed_chunks = total_chunks
             self.ingest_checkpoint_repository.upsert(

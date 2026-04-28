@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import io
+import os
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from google.genai import types
@@ -175,15 +177,34 @@ class GeminiFileSearchService:
         return normalized.upper()
 
     @staticmethod
-    def _document_name_from_operation_response(response: Any) -> str:
+    def _document_name_from_operation_response(response: Any, store_name: str | None = None) -> str:
         document_name = GeminiFileSearchService._field_value(
             response,
             "document_name",
             "documentName",
             "name",
         )
-        if document_name:
-            return str(document_name).strip()
+        if not document_name:
+            return ""
+
+        normalized = str(document_name).strip()
+        if not normalized:
+            return ""
+        if normalized.startswith("fileSearchStores/"):
+            return normalized
+
+        parent = str(
+            GeminiFileSearchService._field_value(response, "parent")
+            or store_name
+            or ""
+        ).strip()
+        if parent.startswith("fileSearchStores/"):
+            if normalized.startswith("documents/"):
+                return f"{parent}/{normalized}"
+            return f"{parent}/documents/{normalized}"
+
+        if normalized.startswith("documents/") and store_name:
+            return f"{store_name}/{normalized}"
         return ""
 
     @staticmethod
@@ -257,6 +278,37 @@ class GeminiFileSearchService:
                 ) from last_error
             time.sleep(poll_interval)
 
+    @staticmethod
+    def _write_temp_file(content: bytes, source_file: str) -> str:
+        suffix = Path(source_file).suffix or ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(content)
+            return temp_file.name
+
+    def _upload_to_file_search_store(
+        self,
+        *,
+        store_name: str,
+        temp_path: str,
+        source_file: str,
+        mime_type: str,
+        custom_metadata: list[types.CustomMetadata],
+    ) -> Any:
+        config_kwargs: dict[str, Any] = {
+            "mime_type": mime_type,
+            "display_name": source_file,
+            "custom_metadata": custom_metadata,
+        }
+        chunking_config = self._chunking_config()
+        if chunking_config is not None:
+            config_kwargs["chunking_config"] = chunking_config
+
+        return self.client.file_search_stores.upload_to_file_search_store(
+            file_search_store_name=store_name,
+            file=temp_path,
+            config=types.UploadToFileSearchStoreConfig(**config_kwargs),
+        )
+
     def get_or_create_store_name(self) -> str:
         global _cached_store_name
 
@@ -322,37 +374,34 @@ class GeminiFileSearchService:
             raise ValueError(f"Konten file '{source_file}' kosong.")
 
         store_name = self.get_or_create_store_name()
-        buffer = io.BytesIO(content)
-        buffer.name = source_file
-
         custom_metadata = [
             types.CustomMetadata(key="source_file", string_value=source_file),
         ]
         if sha256:
             custom_metadata.append(types.CustomMetadata(key="sha256", string_value=sha256))
 
-        config_kwargs: dict[str, Any] = {
-            "mime_type": mime_type,
-            "display_name": source_file,
-            "custom_metadata": custom_metadata,
-        }
-        chunking_config = self._chunking_config()
-        if chunking_config is not None:
-            config_kwargs["chunking_config"] = chunking_config
-
-        operation = self.client.file_search_stores.upload_to_file_search_store(
-            file_search_store_name=store_name,
-            file=buffer,
-            config=types.UploadToFileSearchStoreConfig(**config_kwargs),
-        )
-        completed_operation = self._wait_for_operation(operation)
-        response = getattr(completed_operation, "response", None)
-        document_name = self._document_name_from_operation_response(response)
-        if not document_name:
-            document_name = self.find_document_name_by_source_file(source_file, store_name=store_name) or ""
-        if not document_name:
-            raise RuntimeError(f"Dokumen Gemini untuk '{source_file}' tidak ditemukan setelah upload.")
-        self._wait_for_document_active(document_name)
+        temp_path = self._write_temp_file(content, source_file)
+        try:
+            operation = self._upload_to_file_search_store(
+                store_name=store_name,
+                temp_path=temp_path,
+                source_file=source_file,
+                mime_type=mime_type,
+                custom_metadata=custom_metadata,
+            )
+            completed_operation = self._wait_for_operation(operation)
+            response = getattr(completed_operation, "response", None)
+            document_name = self._document_name_from_operation_response(response, store_name)
+            if not document_name:
+                document_name = self.find_document_name_by_source_file(source_file, store_name=store_name) or ""
+            if not document_name:
+                raise RuntimeError(f"Dokumen Gemini untuk '{source_file}' tidak ditemukan setelah upload.")
+            self._wait_for_document_active(document_name)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
 
         return {
             "store_name": store_name,

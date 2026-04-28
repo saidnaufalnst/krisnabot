@@ -24,18 +24,14 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTION = (
     "Anda adalah KRISNABOT, asisten tanya jawab dokumen KRISNA.\n"
-    "Jawab hanya dari rujukan File Search dokumen KRISNA, dalam bahasa Indonesia.\n"
-    "Jika rujukan tidak cukup jelas, katakan jawaban belum tersedia di dokumen.\n"
-    "Fokus menjawab inti pertanyaan pengguna secara jelas, padat, dan relevan.\n"
-    "Jawab tepat pada objek yang ditanyakan pengguna dan jangan mengalihkan ke topik, menu, atau data lain jika tidak diperlukan.\n"
-    "Jangan menambahkan asumsi, alternatif maksud, atau informasi tambahan yang tidak diminta pengguna.\n"
-    "Jika pertanyaan berupa keluhan atau hambatan, jelaskan langkah yang perlu dicek atau dilakukan berdasarkan dokumen.\n"
-    "Jawab dengan detail jika dokumen memuat detail penting.\n"
-    "Untuk pertanyaan tata cara, berikan langkah yang runtut, operasional, dan cukup detail, tetapi tetap ringkas.\n"
-    "Utamakan jawaban yang langsung membantu pengguna menyelesaikan pertanyaannya.\n"
-    "Sebutkan menu, tombol, status, syarat, atau hak akses jika memang disebut di rujukan.\n"
-    "Tambahkan 'Catatan:' jika ada informasi atau batasan penting dari rujukan.\n"
-    "Jangan pakai markdown code fence, heading, atau citation."
+    "Gunakan Gemini File Search sebagai sumber rujukan utama dan jawab dalam bahasa Indonesia.\n"
+    "Jawab hanya dari rujukan yang relevan; jangan menambah fakta, menu, tombol, status, atau syarat yang tidak ada di rujukan.\n"
+    "Pahami objek pertanyaan secara semantik. Jangan mengganti objek dengan istilah lain yang hanya mirip.\n"
+    "Jika pertanyaan berupa keluhan tidak bisa, gagal, error, atau kendala, pahami sebagai permintaan cara melakukan objek tersebut beserta pengecekan syarat/penyebab yang disebut rujukan.\n"
+    "Jika pertanyaan meminta cara atau kendala, tulis langkah yang relevan dari awal sampai akhir; sebutkan alternatif hanya jika rujukan memuatnya.\n"
+    "Jangan menyamakan prosedur objek induk, wadah, level di atas, atau istilah yang memuat nama objek dengan prosedur objek yang ditanyakan.\n"
+    "Jika rujukan hanya memuat objek terkait tetapi bukan objek yang ditanyakan, nyatakan rujukan belum cukup; jangan tampilkan prosedur objek terkait sebagai jawaban utama.\n"
+    "Jika rujukan tidak cukup, sampaikan keterbatasannya. Jangan pakai code fence, citation, atau heading berlebihan."
 )
 
 GREETINGS = {"halo", "hai", "hi", "pagi", "siang", "sore", "malam", "halo bot", "halo krisnabot"}
@@ -66,9 +62,9 @@ class RAGService:
         self._store_names_cache:   list[str] = []
         self._store_names_ts:      float     = 0.0
 
-        # Config (read once)
-        self._max_tokens = max(int(getattr(settings, "chat_max_output_tokens", 500) or 500), 250)
-        self._top_k      = max(int(getattr(settings, "file_search_top_k", 5) or 5), 1)
+        # Config (read once). None means the request follows Gemini defaults.
+        self._max_tokens = self._positive_int_or_none(getattr(settings, "chat_max_output_tokens", 0))
+        self._top_k      = self._positive_int_or_none(getattr(settings, "file_search_top_k", 0))
         self._retry_attempts = max(int(getattr(settings, "chat_retry_attempts", 2) or 2), 0)
         self._retry_backoff_seconds = max(
             float(getattr(settings, "chat_retry_backoff_seconds", 1) or 1),
@@ -154,6 +150,11 @@ class RAGService:
         return " ".join((text or "").casefold().strip().split())
 
     @staticmethod
+    def _positive_int_or_none(value: Any) -> int | None:
+        parsed = int(value or 0)
+        return parsed if parsed > 0 else None
+
+    @staticmethod
     def _clean_answer(text: str | None) -> str:
         def normalize_note_label(match: re.Match[str]) -> str:
             label = match.group("label").casefold()
@@ -236,6 +237,18 @@ class RAGService:
             r"\bdokumen tidak memuat\b",
             r"\btidak dijelaskan dalam dokumen\b",
             r"\btidak dapat saya temukan\b",
+        )
+        return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+    @staticmethod
+    def _looks_like_related_object_substitution(answer: str) -> bool:
+        normalized = RAGService._normalize(answer)
+        patterns = (
+            r"\brujukan\b.*\btidak\b.*\bspesifik\b.*\b(?:namun|tetapi|meskipun)\b",
+            r"\bdokumen\b.*\btidak\b.*\bspesifik\b.*\b(?:namun|tetapi|meskipun)\b",
+            r"\btidak secara spesifik\b.*\b(?:namun|tetapi|meskipun)\b",
+            r"\bmerupakan\b.*\b(?:wadah|tingkat di atas|level di atas|induk)\b",
+            r"\b(?:wadah|tingkat di atas|level di atas|induk)\b.*\buntuk\b",
         )
         return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
 
@@ -344,41 +357,50 @@ class RAGService:
     @staticmethod
     def _build_prompt(question: str) -> str:
         """
-        Prompt utama — minta model mencari secara semantik, bukan hanya kata kunci persis.
-        Ini yang membantu KRISNABOT memahami keluhan/pertanyaan informal.
+        Prompt minimal: retrieval dan grounding diserahkan ke Gemini File Search.
         """
         return (
-            f"Pertanyaan pengguna:\n{question}\n\n"
-            "Cari secara semantik: pahami maksud, bukan sekadar kata yang sama persis.\n"
-            "Untuk pertanyaan definisi, cari di bagian pengantar, tujuan, atau gambaran umum.\n"
-            "Untuk keluhan atau masalah, reformulasikan menjadi tujuan yang ingin dicapai "
-            "(misal: cara login, syarat akses, langkah validasi) lalu cari rujukannya.\n"
-            "Untuk prosedur, prioritaskan rujukan yang menyebut langkah, menu, form, tombol, status, field, atau syarat yang benar-benar relevan.\n"
-            "Jawab langsung dan fokus pada pertanyaan pengguna.\n"
-            "Tetap pada objek yang ditanyakan. Jangan melebar ke data atau proses lain yang tidak diminta hanya karena masih berdekatan konteksnya.\n"
-            "Jika dokumen menyebut alternatif atau data lain, masukkan hanya bila memang diperlukan agar jawaban inti menjadi benar.\n"
-            "Jika rujukan mendukung, beri jawaban yang jelas, padat, dan relevan.\n"
-            "Jangan berhenti pada jawaban umum jika dokumen memuat langkah, syarat, pengecekan, status, lokasi menu, nama tombol, atau isian form yang lebih rinci.\n"
-            "Utamakan langkah, menu, tombol, status, syarat, hak akses, dan isian form yang paling membantu menjawab pertanyaan.\n"
-            "Jika tidak ada rujukan yang jelas, jawab bahwa jawaban belum tersedia di dokumen."
+            f"{question}\n\n"
+            "Jawab langsung berdasarkan rujukan File Search yang relevan. "
+            "Jika pertanyaan berupa keluhan tidak bisa/gagal/error/kendala, jawab sebagai cara melakukan hal yang dimaksud lalu tambahkan pengecekan syarat atau penyebab jika ada di rujukan. "
+            "Jika berupa prosedur atau kendala, susun langkah lengkap yang didukung rujukan. "
+            "Jangan mengganti jawaban dengan prosedur objek induk, wadah, level di atas, atau istilah yang hanya mirip. "
+            "Jika rujukan tidak cukup, sebutkan keterbatasannya."
         )
+
+    @staticmethod
+    def _build_recovery_question(question: str) -> str:
+        stripped = " ".join((question or "").strip().split())
+        if not stripped:
+            return ""
+
+        match = re.match(
+            r"^(?:saya|kami|aku|pengguna|user)?\s*(?:tidak bisa|tidak dapat|gagal)\s+(.+)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            target = match.group(1).strip(" .,:;!?")
+            if target:
+                return f"Bagaimana cara {target}?"
+
+        return stripped
 
     @staticmethod
     def _build_recovery_prompt(question: str) -> str:
         """
-        Prompt cadangan — dipakai saat pass pertama gagal menemukan grounding.
-        Mendorong model untuk mereformulasi keluhan menjadi pencarian yang lebih eksplisit.
+        Prompt ulang generik saat retrieval awal gagal; tidak berisi aturan domain khusus.
         """
+        recovery_question = RAGService._build_recovery_question(question)
         return (
-            f"Pertanyaan atau keluhan pengguna:\n{question}\n\n"
-            "Jika kalimat di atas berupa keluhan atau laporan masalah, ubah menjadi pertanyaan eksplisit "
-            "tentang cara, langkah, syarat, hak akses, status, atau penyebab yang relevan.\n"
-            "Gunakan hanya rujukan yang benar-benar ditemukan dari File Search dokumen KRISNA.\n"
-            "Jawab langsung, fokus pada masalah yang ditanyakan, secara jelas, padat, dan relevan.\n"
-            "Jangan mengasumsikan maksud lain dan jangan melebar ke proses atau data lain yang tidak diminta jika tidak diperlukan.\n"
-            "Jika dokumen menjelaskan prosesnya, tulis langkah inti secara berurutan, cukup detail, dan tanpa bertele-tele.\n"
-            "Jika ada langkah penyelesaian, sebutkan syarat, status, lokasi menu, nama tombol, atau batasan penting yang benar-benar relevan.\n"
-            "Jika tidak ada rujukan yang jelas, jawab bahwa jawaban belum tersedia di dokumen."
+            f"Pertanyaan pengguna:\n{question}\n\n"
+            f"Pertanyaan untuk pencarian ulang:\n{recovery_question}\n\n"
+            "Jawab berdasarkan pertanyaan untuk pencarian ulang, tetapi tetap sesuai maksud pertanyaan pengguna. "
+            "Utamakan objek yang tertulis pada pertanyaan tersebut. "
+            "Jangan memakai prosedur objek induk, wadah, level di atas, atau istilah yang hanya mirip sebagai pengganti jawaban utama. "
+            "Objek induk boleh disebut hanya jika rujukan memakainya sebagai langkah akses ke objek yang ditanyakan. "
+            "Jika rujukan hanya memuat objek terkait dan bukan langkah objek yang ditanyakan, nyatakan rujukan belum cukup. "
+            "Jika rujukan tetap tidak cukup, sebutkan keterbatasannya."
         )
 
     # ------------------------------------------------------------------
@@ -386,22 +408,28 @@ class RAGService:
     # ------------------------------------------------------------------
 
     def _call_model(self, prompt: str, model_name: str, store_names: list[str]):
+        file_search_kwargs: dict[str, Any] = {
+            "file_search_store_names": store_names,
+        }
+        if self._top_k is not None:
+            file_search_kwargs["top_k"] = self._top_k
+
+        config_kwargs: dict[str, Any] = {
+            "system_instruction": SYSTEM_INSTRUCTION,
+            "temperature": 0,
+            "tools": [
+                types.Tool(
+                    file_search=types.FileSearch(**file_search_kwargs)
+                )
+            ],
+        }
+        if self._max_tokens is not None:
+            config_kwargs["max_output_tokens"] = self._max_tokens
+
         return self.client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0,
-                max_output_tokens=self._max_tokens,
-                tools=[
-                    types.Tool(
-                        file_search=types.FileSearch(
-                            file_search_store_names=store_names,
-                            top_k=self._top_k,
-                        )
-                    )
-                ],
-            ),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
 
     def _call_model_with_retry(self, prompt: str, model_name: str, store_names: list[str]):
@@ -558,17 +586,19 @@ class RAGService:
             self._log_chat(question, result["message"], False, [], result["error"])
             return result
 
-        # Pass 1 — prompt utama
         result = self._generate_answer(self._build_prompt(question))
 
-        # Pass 2 — recovery prompt jika dokumen ada tapi grounding tidak terdeteksi
-        # (membantu pertanyaan informal / keluhan yang kata-katanya tidak persis sama dengan dokumen)
+        # Pass kedua hanya memperjelas maksud pertanyaan secara generik saat pass awal gagal.
         if not result.get("found") and self._should_retry_with_recovery_prompt(question, result):
             recovery = self._generate_answer(self._build_recovery_prompt(question))
             if recovery.get("found"):
                 result = recovery
 
-        if result.get("found") and self._looks_like_unanswered_answer(str(result.get("answer", "") or "")):
+        answer_text = str(result.get("answer", "") or "")
+        if result.get("found") and (
+            self._looks_like_unanswered_answer(answer_text)
+            or self._looks_like_related_object_substitution(answer_text)
+        ):
             result = self._fail(self._helpdesk_message(), "context_not_found")
         elif not result.get("found") and result.get("error") in {
             "context_not_found",

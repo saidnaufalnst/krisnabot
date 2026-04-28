@@ -159,8 +159,10 @@ class RAGServiceTests(unittest.TestCase):
         result = self.rag.ask("Saya tidak bisa menambah rincian output")
 
         self.assertEqual(len(calls), 2)
-        self.assertIn("Pertanyaan pengguna:", calls[0])
-        self.assertIn("Pertanyaan atau keluhan pengguna:", calls[1])
+        self.assertIn("Saya tidak bisa menambah rincian output", calls[0])
+        self.assertIn("Pertanyaan pengguna:", calls[1])
+        self.assertIn("Pertanyaan untuk pencarian ulang:", calls[1])
+        self.assertIn("Bagaimana cara menambah rincian output?", calls[1])
         self.assertTrue(result["found"])
         self.assertEqual(
             result["answer"],
@@ -200,10 +202,11 @@ class RAGServiceTests(unittest.TestCase):
         result = self.rag.ask("Kenapa login KRISNA error 403?")
 
         self.assertEqual(len(calls), 2)
+        self.assertIn("Pertanyaan pengguna:", calls[1])
         self.assertTrue(result["found"])
         self.assertEqual(result["used_files"], ["Manual.pdf"])
 
-    def test_ask_does_not_retry_recovery_prompt_for_definition_context_not_found(self) -> None:
+    def test_ask_does_not_retry_for_definition_context_not_found(self) -> None:
         self.rag.ingestion = type(
             "DummyIngestion",
             (),
@@ -294,26 +297,73 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIn("helpdesk", result["message"])
         self.assertEqual(result["used_files"], [])
 
-    def test_build_prompt_uses_semantic_retrieval_instruction(self) -> None:
+    def test_ask_redirects_related_object_substitution_to_helpdesk(self) -> None:
+        self.rag.ingestion = type(
+            "DummyIngestion",
+            (),
+            {"list_indexed_files": staticmethod(lambda: ["Manual.pdf"])},
+        )()
+        self.rag._generate_answer = lambda prompt: {
+            "found": True,
+            "answer": (
+                "Dokumen rujukan tidak secara spesifik menampilkan langkah Rincian Output, "
+                "namun menjelaskan Klasifikasi Rincian Output yang merupakan wadah untuk Rincian Output."
+            ),
+            "message": "",
+            "error": "",
+            "used_files": ["Manual.pdf"],
+        }
+
+        result = self.rag.ask("Bagaimana menambah Rincian Output?")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["answer"], "")
+        self.assertEqual(result["error"], "context_not_found")
+        self.assertIn("helpdesk", result["message"])
+        self.assertEqual(result["used_files"], [])
+
+    def test_build_prompt_is_minimal_and_file_search_grounded(self) -> None:
         prompt = self.rag._build_prompt("Apa itu KRISNA?")
 
-        self.assertIn("Cari secara semantik", prompt)
-        self.assertIn("pertanyaan definisi", prompt)
-        self.assertIn("keluhan atau masalah", prompt)
-        self.assertIn("langkah, menu, form, tombol, status, field, atau syarat", prompt)
-        self.assertIn("Tetap pada objek yang ditanyakan", prompt)
-        self.assertIn("Jangan melebar ke data atau proses lain", prompt)
-        self.assertIn("jelas, padat, dan relevan", prompt)
-        self.assertIn("lokasi menu, nama tombol, atau isian form", prompt)
         self.assertIn("Apa itu KRISNA?", prompt)
+        self.assertIn("Jawab langsung berdasarkan rujukan File Search yang relevan", prompt)
+        self.assertIn("tidak bisa/gagal/error/kendala", prompt)
+        self.assertIn("cara melakukan hal yang dimaksud", prompt)
+        self.assertIn("prosedur atau kendala", prompt)
+        self.assertIn("prosedur objek induk", prompt)
+        self.assertIn("Jika rujukan tidak cukup", prompt)
+        self.assertNotIn("rujukan lintas dokumen", prompt)
+        self.assertNotIn("manual dahulu", prompt)
         self.assertNotIn("Istilah terkait untuk pencarian", prompt)
 
-    def test_build_recovery_prompt_avoids_unrelated_expansion(self) -> None:
-        prompt = self.rag._build_recovery_prompt("Bagaimana cara menambah kegiatan?")
+    def test_build_prompt_uses_generic_object_matching_not_hardcoded_ro_guard(self) -> None:
+        prompt = self.rag._build_prompt("Bagaimana cara menambah Rincian Output?")
 
-        self.assertIn("Jangan mengasumsikan maksud lain", prompt)
-        self.assertIn("jangan melebar ke proses atau data lain", prompt)
-        self.assertIn("lokasi menu, nama tombol", prompt)
+        self.assertIn("Bagaimana cara menambah Rincian Output?", prompt)
+        self.assertIn("File Search", prompt)
+        self.assertNotIn("RO berbeda dari Klasifikasi Rincian Output", prompt)
+        self.assertNotIn("Copy KRO", prompt)
+
+    def test_build_recovery_prompt_is_generic_not_domain_hardcoded(self) -> None:
+        prompt = self.rag._build_recovery_prompt("Saya tidak bisa menambah Rincian Output")
+
+        self.assertIn("Pertanyaan untuk pencarian ulang:", prompt)
+        self.assertIn("Bagaimana cara menambah Rincian Output?", prompt)
+        self.assertIn("Utamakan objek yang tertulis", prompt)
+        self.assertIn("prosedur objek induk", prompt)
+        self.assertIn("Jika rujukan hanya memuat objek terkait", prompt)
+        self.assertNotIn("RO berbeda dari Klasifikasi Rincian Output", prompt)
+        self.assertNotIn("Copy KRO", prompt)
+
+    def test_build_recovery_question_turns_complaint_into_how_to_question(self) -> None:
+        self.assertEqual(
+            self.rag._build_recovery_question("Saya tidak bisa menambah Rincian Output"),
+            "Bagaimana cara menambah Rincian Output?",
+        )
+        self.assertEqual(
+            self.rag._build_recovery_question("Gagal upload dokumen"),
+            "Bagaimana cara upload dokumen?",
+        )
 
     def test_get_store_names_skips_known_store_lookup_when_no_index_exists(self) -> None:
         self.rag.ingestion = type(
@@ -559,6 +609,74 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(chunking_config.white_space_config.max_tokens_per_chunk, 240)
         self.assertEqual(chunking_config.white_space_config.max_overlap_tokens, 30)
 
+    def test_file_search_service_omits_chunking_config_when_setting_zero(self) -> None:
+        self.override_setting("file_search_max_tokens_per_chunk", 0)
+        self.override_setting("file_search_max_overlap_tokens", 0)
+
+        self.assertIsNone(GeminiFileSearchService._chunking_config())
+
+    def test_call_model_omits_optional_overrides_when_config_zero(self) -> None:
+        captured: dict[str, object] = {}
+        self.rag._top_k = None
+        self.rag._max_tokens = None
+
+        def fake_generate_content(*, model: str, contents: str, config):
+            captured["model"] = model
+            captured["contents"] = contents
+            captured["config"] = config
+            return type("Response", (), {"text": "ok"})()
+
+        self.rag.client = type(
+            "DummyClient",
+            (),
+            {
+                "models": type(
+                    "DummyModels",
+                    (),
+                    {"generate_content": staticmethod(fake_generate_content)},
+                )()
+            },
+        )()
+
+        self.rag._call_model("Pertanyaan", "configured-model", ["fileSearchStores/test"])
+
+        config = captured["config"]
+        file_search = config.tools[0].file_search
+        self.assertEqual(captured["model"], "configured-model")
+        self.assertEqual(captured["contents"], "Pertanyaan")
+        self.assertIsNone(config.max_output_tokens)
+        self.assertIsNone(file_search.top_k)
+        self.assertEqual(file_search.file_search_store_names, ["fileSearchStores/test"])
+
+    def test_call_model_sends_positive_optional_overrides(self) -> None:
+        captured: dict[str, object] = {}
+        self.rag._top_k = 15
+        self.rag._max_tokens = 1200
+
+        def fake_generate_content(*, model: str, contents: str, config):
+            del model, contents
+            captured["config"] = config
+            return type("Response", (), {"text": "ok"})()
+
+        self.rag.client = type(
+            "DummyClient",
+            (),
+            {
+                "models": type(
+                    "DummyModels",
+                    (),
+                    {"generate_content": staticmethod(fake_generate_content)},
+                )()
+            },
+        )()
+
+        self.rag._call_model("Pertanyaan", "configured-model", ["fileSearchStores/test"])
+
+        config = captured["config"]
+        file_search = config.tools[0].file_search
+        self.assertEqual(config.max_output_tokens, 1200)
+        self.assertEqual(file_search.top_k, 15)
+
     def test_parse_response_accepts_grounding_chunk_text_without_source_file(self) -> None:
         self.rag.file_search_service = type(
             "DummyFileSearchService",
@@ -785,6 +903,23 @@ class RAGServiceTests(unittest.TestCase):
         self.assertTrue(self.rag._looks_like_unanswered_answer("Dokumen tidak memuat informasi tersebut."))
         self.assertTrue(self.rag._looks_like_unanswered_answer("Hal ini tidak dijelaskan dalam dokumen."))
         self.assertTrue(self.rag._looks_like_unanswered_answer("Jawaban ini tidak dapat saya temukan."))
+
+    def test_looks_like_related_object_substitution_matches_self_contradicting_answer(self) -> None:
+        self.assertTrue(
+            self.rag._looks_like_related_object_substitution(
+                "Rujukan tidak secara spesifik menampilkan langkah RO, namun menjelaskan KRO."
+            )
+        )
+        self.assertTrue(
+            self.rag._looks_like_related_object_substitution(
+                "Objek ini merupakan wadah untuk objek yang ditanyakan."
+            )
+        )
+        self.assertFalse(
+            self.rag._looks_like_related_object_substitution(
+                "Masuk ke halaman KRO, pilih nomenklatur, lalu pada halaman Rincian Output klik Tambah Data."
+            )
+        )
 
 
 if __name__ == "__main__":

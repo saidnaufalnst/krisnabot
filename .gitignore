@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 *.log
+*.err
 .pytest_cache/
 
 frontend/node_modules/
