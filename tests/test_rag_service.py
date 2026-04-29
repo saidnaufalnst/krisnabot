@@ -4,7 +4,7 @@ from google.genai.errors import ServerError
 
 from app.core.config import settings
 from app.services.gemini_file_search_service import GeminiFileSearchService
-from app.services.rag_service import RAGService
+from app.services.rag_service import RAGService, SYSTEM_INSTRUCTION
 
 
 class RAGServiceTests(unittest.TestCase):
@@ -322,14 +322,28 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIn("helpdesk", result["message"])
         self.assertEqual(result["used_files"], [])
 
-    def test_build_prompt_is_minimal_and_file_search_grounded(self) -> None:
+    def test_system_instruction_requests_detailed_answers_and_notes(self) -> None:
+        self.assertIn("lengkap dan detail sesuai isi rujukan", SYSTEM_INSTRUCTION)
+        self.assertIn("SEMUA langkah dari awal hingga akhir", SYSTEM_INSTRUCTION)
+        self.assertIn("Jangan mengawali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'", SYSTEM_INSTRUCTION)
+        self.assertIn("diawali **Catatan:**", SYSTEM_INSTRUCTION)
+        self.assertIn("Letakkan catatan setelah uraian", SYSTEM_INSTRUCTION)
+        self.assertIn("kumpulkan catatan tersebut berurutan di akhir bagian", SYSTEM_INSTRUCTION)
+        self.assertIn("jangan menambahkan catatan fiktif", SYSTEM_INSTRUCTION)
+
+    def test_build_prompt_requests_detailed_file_search_answer(self) -> None:
         prompt = self.rag._build_prompt("Apa itu KRISNA?")
 
         self.assertIn("Apa itu KRISNA?", prompt)
         self.assertIn("Jawab langsung berdasarkan rujukan File Search yang relevan", prompt)
+        self.assertIn("Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'", prompt)
+        self.assertIn("lengkap dan detail", prompt)
+        self.assertIn("SEMUA langkah secara berurutan", prompt)
+        self.assertIn("Tambahkan **Catatan:**", prompt)
+        self.assertIn("Letakkan catatan setelah uraian", prompt)
+        self.assertIn("kumpulkan catatan tersebut berurutan di akhir bagian", prompt)
         self.assertIn("tidak bisa/gagal/error/kendala", prompt)
         self.assertIn("cara melakukan hal yang dimaksud", prompt)
-        self.assertIn("prosedur atau kendala", prompt)
         self.assertIn("prosedur objek induk", prompt)
         self.assertIn("Jika rujukan tidak cukup", prompt)
         self.assertNotIn("rujukan lintas dokumen", prompt)
@@ -349,6 +363,12 @@ class RAGServiceTests(unittest.TestCase):
 
         self.assertIn("Pertanyaan untuk pencarian ulang:", prompt)
         self.assertIn("Bagaimana cara menambah Rincian Output?", prompt)
+        self.assertIn("Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'", prompt)
+        self.assertIn("lengkap dan detail", prompt)
+        self.assertIn("SEMUA langkah yang ada di rujukan", prompt)
+        self.assertIn("Tambahkan **Catatan:**", prompt)
+        self.assertIn("Letakkan catatan setelah uraian", prompt)
+        self.assertIn("kumpulkan catatan tersebut berurutan di akhir bagian", prompt)
         self.assertIn("Utamakan objek yang tertulis", prompt)
         self.assertIn("prosedur objek induk", prompt)
         self.assertIn("Jika rujukan hanya memuat objek terkait", prompt)
@@ -436,6 +456,13 @@ class RAGServiceTests(unittest.TestCase):
                 "- Kode KRO dan nomenklatur akan terisi otomatis."
             ),
         )
+
+    def test_clean_answer_removes_exact_available_document_preamble(self) -> None:
+        raw_answer = "Berdasarkan dokumen yang tersedia, terdapat tiga cara untuk menambah RO."
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(cleaned, "Terdapat tiga cara untuk menambah RO.")
 
     def test_clean_answer_removes_information_and_procedure_labels(self) -> None:
         raw_answer = (

@@ -27,8 +27,15 @@ SYSTEM_INSTRUCTION = (
     "Gunakan Gemini File Search sebagai sumber rujukan utama dan jawab dalam bahasa Indonesia.\n"
     "Jawab hanya dari rujukan yang relevan; jangan menambah fakta, menu, tombol, status, atau syarat yang tidak ada di rujukan.\n"
     "Pahami objek pertanyaan secara semantik. Jangan mengganti objek dengan istilah lain yang hanya mirip.\n"
+    "Berikan jawaban yang lengkap dan detail sesuai isi rujukan; jangan mempersingkat atau meringkas langkah yang sebenarnya ada di dokumen.\n"
+    "Jika pertanyaan berupa prosedur, tata cara, atau kendala, tuliskan SEMUA langkah dari awal hingga akhir secara berurutan dan terperinci.\n"
+    "Jangan mengawali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'; langsung jawab inti pertanyaan.\n"
+    "Pada setiap langkah atau bagian yang kritis, berikan catatan singkat (diawali **Catatan:**) untuk menjelaskan hal penting, syarat, peringatan, atau konsekuensi yang disebut rujukan.\n"
+    "Letakkan catatan setelah uraian, definisi, dan langkah-langkah pada bagian terkait; jangan letakkan catatan sebelum langkah-langkah utama.\n"
+    "Jika ada beberapa catatan untuk satu bagian atau cara, kumpulkan catatan tersebut berurutan di akhir bagian tersebut.\n"
+    "Catatan hanya ditulis jika ada informasi penting yang perlu diperhatikan pengguna; jangan menambahkan catatan fiktif.\n"
     "Jika pertanyaan berupa keluhan tidak bisa, gagal, error, atau kendala, pahami sebagai permintaan cara melakukan objek tersebut beserta pengecekan syarat/penyebab yang disebut rujukan.\n"
-    "Jika pertanyaan meminta cara atau kendala, tulis langkah yang relevan dari awal sampai akhir; sebutkan alternatif hanya jika rujukan memuatnya.\n"
+    "Sebutkan alternatif langkah hanya jika rujukan memuatnya.\n"
     "Jangan menyamakan prosedur objek induk, wadah, level di atas, atau istilah yang memuat nama objek dengan prosedur objek yang ditanyakan.\n"
     "Jika rujukan hanya memuat objek terkait tetapi bukan objek yang ditanyakan, nyatakan rujukan belum cukup; jangan tampilkan prosedur objek terkait sebagai jawaban utama.\n"
     "Jika rujukan tidak cukup, sampaikan keterbatasannya. Jangan pakai code fence, citation, atau heading berlebihan."
@@ -172,6 +179,14 @@ class RAGService:
             prefix, _, suffix = result.partition("\n\n[")
             if "[cite:" in suffix:
                 result = prefix.strip()
+        result = re.sub(
+            r"^Berdasarkan dokumen yang tersedia,\s*",
+            "",
+            result,
+            flags=re.IGNORECASE,
+        )
+        if result:
+            result = result[0].upper() + result[1:]
 
         cleaned_lines: list[str] = []
         for line in result.split("\n"):
@@ -357,13 +372,18 @@ class RAGService:
     @staticmethod
     def _build_prompt(question: str) -> str:
         """
-        Prompt minimal: retrieval dan grounding diserahkan ke Gemini File Search.
+        Prompt per-request untuk jawaban detail berbasis File Search.
         """
         return (
             f"{question}\n\n"
             "Jawab langsung berdasarkan rujukan File Search yang relevan. "
+            "Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'; langsung jawab inti pertanyaan. "
+            "Berikan jawaban yang lengkap dan detail; jangan melewatkan langkah atau informasi yang ada di rujukan. "
+            "Jika pertanyaan berupa prosedur atau tata cara, susun SEMUA langkah secara berurutan dan terperinci dari awal hingga akhir. "
+            "Tambahkan **Catatan:** setelah langkah atau bagian yang memiliki syarat penting, peringatan, atau konsekuensi yang disebutkan rujukan. "
+            "Letakkan catatan setelah uraian, definisi, dan langkah-langkah pada bagian terkait, bukan sebelum langkah-langkah utama. "
+            "Jika ada beberapa catatan untuk satu bagian atau cara, kumpulkan catatan tersebut berurutan di akhir bagian tersebut. "
             "Jika pertanyaan berupa keluhan tidak bisa/gagal/error/kendala, jawab sebagai cara melakukan hal yang dimaksud lalu tambahkan pengecekan syarat atau penyebab jika ada di rujukan. "
-            "Jika berupa prosedur atau kendala, susun langkah lengkap yang didukung rujukan. "
             "Jangan mengganti jawaban dengan prosedur objek induk, wadah, level di atas, atau istilah yang hanya mirip. "
             "Jika rujukan tidak cukup, sebutkan keterbatasannya."
         )
@@ -396,6 +416,11 @@ class RAGService:
             f"Pertanyaan pengguna:\n{question}\n\n"
             f"Pertanyaan untuk pencarian ulang:\n{recovery_question}\n\n"
             "Jawab berdasarkan pertanyaan untuk pencarian ulang, tetapi tetap sesuai maksud pertanyaan pengguna. "
+            "Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'; langsung jawab inti pertanyaan. "
+            "Berikan jawaban yang lengkap dan detail; tuliskan SEMUA langkah yang ada di rujukan secara berurutan. "
+            "Tambahkan **Catatan:** setelah langkah atau bagian yang memiliki syarat penting, peringatan, atau konsekuensi yang disebutkan rujukan. "
+            "Letakkan catatan setelah uraian, definisi, dan langkah-langkah pada bagian terkait, bukan sebelum langkah-langkah utama. "
+            "Jika ada beberapa catatan untuk satu bagian atau cara, kumpulkan catatan tersebut berurutan di akhir bagian tersebut. "
             "Utamakan objek yang tertulis pada pertanyaan tersebut. "
             "Jangan memakai prosedur objek induk, wadah, level di atas, atau istilah yang hanya mirip sebagai pengganti jawaban utama. "
             "Objek induk boleh disebut hanya jika rujukan memakainya sebagai langkah akses ke objek yang ditanyakan. "
@@ -416,7 +441,6 @@ class RAGService:
 
         config_kwargs: dict[str, Any] = {
             "system_instruction": SYSTEM_INSTRUCTION,
-            "temperature": 0,
             "tools": [
                 types.Tool(
                     file_search=types.FileSearch(**file_search_kwargs)
