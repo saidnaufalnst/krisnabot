@@ -30,9 +30,11 @@ SYSTEM_INSTRUCTION = (
     "Berikan jawaban yang lengkap dan detail sesuai isi rujukan; jangan mempersingkat atau meringkas langkah yang sebenarnya ada di dokumen.\n"
     "Jika pertanyaan berupa prosedur, tata cara, atau kendala, tuliskan SEMUA langkah dari awal hingga akhir secara berurutan dan terperinci.\n"
     "Jangan mengawali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'; langsung jawab inti pertanyaan.\n"
-    "Gunakan format teks polos yang rapi untuk tampilan chat: paragraf pendek, daftar bernomor 1., 2., dan bullet '-' untuk rincian kecil.\n"
-    "Jangan memakai heading markdown seperti #, ##, ####, garis pemisah ---, code fence, citation, atau format bold/italic markdown.\n"
-    "Jika jawaban panjang, bagi menjadi bagian pendek dengan judul teks biasa seperti 'Syarat yang perlu dicek:', 'Cara menambah RO:', 'Alternatif:', dan 'Catatan:'.\n"
+    "Gunakan format chat yang rapi: paragraf pendek, judul bagian dengan bold markdown, daftar bernomor 1., 2., dan bullet '-' untuk rincian kecil.\n"
+    "Jangan memakai heading markdown seperti #, ##, ####, garis pemisah ---, code fence, citation, atau italic markdown.\n"
+    "Jika jawaban panjang, bagi menjadi bagian pendek seperti '**Syarat yang perlu dicek:**', '**Cara utama:**', '**Jika memakai fitur salin/copy:**', '**Alternatif lain:**', dan '**Catatan:**'.\n"
+    "Susun prosedur secara kronologis mengikuti alur layar/aksi pada rujukan. Jangan letakkan pengisian form, pilihan salin/copy, atau unggah dokumen sebelum langkah masuk halaman dan klik tombol yang membuka form jika rujukan menyebut urutan tersebut.\n"
+    "Jika rujukan memuat beberapa cara, jelaskan cara utama terlebih dahulu, lalu pisahkan alternatif pada bagian lain; jangan mencampur langkah dari cara berbeda dalam satu daftar bernomor.\n"
     "Pada setiap langkah atau bagian yang kritis, berikan catatan singkat (diawali Catatan:) untuk menjelaskan hal penting, syarat, peringatan, atau konsekuensi yang disebut rujukan.\n"
     "Letakkan catatan setelah uraian, definisi, dan langkah-langkah pada bagian terkait; jangan letakkan catatan sebelum langkah-langkah utama.\n"
     "Jika ada beberapa catatan untuk satu bagian atau cara, kumpulkan catatan tersebut berurutan di akhir bagian tersebut.\n"
@@ -166,11 +168,19 @@ class RAGService:
 
     @staticmethod
     def _clean_answer(text: str | None) -> str:
+        def normalize_bold_section_title(value: str) -> str:
+            value = strip_inline_markdown(value).strip()
+            if not value:
+                return ""
+            if value.endswith(":"):
+                return f"**{value}**"
+            return f"**{value}**"
+
         def normalize_note_label(match: re.Match[str]) -> str:
             label = match.group("label").casefold()
             rest = re.sub(r"^\*\s+", "", match.group("rest") or "").strip()
             normalized_label = "Catatan penting" if label == "catatan penting" else "Catatan"
-            return f"{normalized_label}:" + (f" {rest}" if rest else "")
+            return f"**{normalized_label}:**" + (f" {strip_inline_markdown(rest)}" if rest else "")
 
         def strip_inline_markdown(value: str) -> str:
             value = re.sub(r"`([^`\n]+)`", r"\1", value)
@@ -205,6 +215,7 @@ class RAGService:
             if not stripped:
                 cleaned_lines.append("")
                 continue
+            was_heading = bool(re.match(r"^#{1,6}\s+", stripped))
             line = re.sub(r"^#{1,6}\s*", "", stripped).strip()
             if re.fullmatch(r"(?:-{3,}|\*{3,}|_{3,})", line):
                 continue
@@ -221,7 +232,19 @@ class RAGService:
                 line,
                 flags=re.IGNORECASE,
             )
-            cleaned_lines.append(strip_inline_markdown(line).rstrip())
+            is_list_item = bool(re.match(r"^(?:\d+[.)]|[-*])\s+", line))
+            is_bold_wrapped = bool(re.fullmatch(r"\*\*[^*\n]+:?\*\*", line.strip()))
+            is_short_colon_title = (
+                not is_list_item
+                and line.strip().endswith(":")
+                and len(strip_inline_markdown(line).strip()) <= 60
+            )
+            if was_heading or is_bold_wrapped or is_short_colon_title:
+                cleaned_lines.append(normalize_bold_section_title(line).rstrip())
+            elif line.startswith("**Catatan") or line.startswith("**Catatan penting"):
+                cleaned_lines.append(line.rstrip())
+            else:
+                cleaned_lines.append(strip_inline_markdown(line).rstrip())
 
         result = "\n".join(cleaned_lines)
         result = re.sub(r"\n{3,}", "\n\n", result).strip()
@@ -396,9 +419,11 @@ class RAGService:
             "Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'; langsung jawab inti pertanyaan. "
             "Berikan jawaban yang lengkap dan detail; jangan melewatkan langkah atau informasi yang ada di rujukan. "
             "Jika pertanyaan berupa prosedur atau tata cara, susun SEMUA langkah secara berurutan dan terperinci dari awal hingga akhir. "
-            "Gunakan format teks polos yang rapi untuk tampilan chat: paragraf pendek, daftar bernomor 1., 2., dan bullet '-' untuk rincian kecil. "
-            "Jangan memakai heading markdown seperti #, ##, ####, garis pemisah ---, code fence, citation, atau format bold/italic markdown. "
-            "Jika jawaban panjang, bagi menjadi bagian pendek dengan judul teks biasa seperti 'Syarat yang perlu dicek:', 'Cara menambah RO:', 'Alternatif:', dan 'Catatan:'. "
+            "Gunakan format chat yang rapi: paragraf pendek, judul bagian dengan bold markdown, daftar bernomor 1., 2., dan bullet '-' untuk rincian kecil. "
+            "Jangan memakai heading markdown seperti #, ##, ####, garis pemisah ---, code fence, citation, atau italic markdown. "
+            "Jika jawaban panjang, bagi menjadi bagian pendek seperti '**Syarat yang perlu dicek:**', '**Cara utama:**', '**Jika memakai fitur salin/copy:**', '**Alternatif lain:**', dan '**Catatan:**'. "
+            "Susun prosedur secara kronologis mengikuti alur layar/aksi pada rujukan. Jangan letakkan pengisian form, pilihan salin/copy, atau unggah dokumen sebelum langkah masuk halaman dan klik tombol yang membuka form jika rujukan menyebut urutan tersebut. "
+            "Jika rujukan memuat beberapa cara, jelaskan cara utama terlebih dahulu, lalu pisahkan alternatif pada bagian lain; jangan mencampur langkah dari cara berbeda dalam satu daftar bernomor. "
             "Tambahkan Catatan: setelah langkah atau bagian yang memiliki syarat penting, peringatan, atau konsekuensi yang disebutkan rujukan. "
             "Letakkan catatan setelah uraian, definisi, dan langkah-langkah pada bagian terkait, bukan sebelum langkah-langkah utama. "
             "Jika ada beberapa catatan untuk satu bagian atau cara, kumpulkan catatan tersebut berurutan di akhir bagian tersebut. "
@@ -437,9 +462,11 @@ class RAGService:
             "Jawab berdasarkan pertanyaan untuk pencarian ulang, tetapi tetap sesuai maksud pertanyaan pengguna. "
             "Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'; langsung jawab inti pertanyaan. "
             "Berikan jawaban yang lengkap dan detail; tuliskan SEMUA langkah yang ada di rujukan secara berurutan. "
-            "Gunakan format teks polos yang rapi untuk tampilan chat: paragraf pendek, daftar bernomor 1., 2., dan bullet '-' untuk rincian kecil. "
-            "Jangan memakai heading markdown seperti #, ##, ####, garis pemisah ---, code fence, citation, atau format bold/italic markdown. "
-            "Jika jawaban panjang, bagi menjadi bagian pendek dengan judul teks biasa seperti 'Syarat yang perlu dicek:', 'Cara menambah RO:', 'Alternatif:', dan 'Catatan:'. "
+            "Gunakan format chat yang rapi: paragraf pendek, judul bagian dengan bold markdown, daftar bernomor 1., 2., dan bullet '-' untuk rincian kecil. "
+            "Jangan memakai heading markdown seperti #, ##, ####, garis pemisah ---, code fence, citation, atau italic markdown. "
+            "Jika jawaban panjang, bagi menjadi bagian pendek seperti '**Syarat yang perlu dicek:**', '**Cara utama:**', '**Jika memakai fitur salin/copy:**', '**Alternatif lain:**', dan '**Catatan:**'. "
+            "Susun prosedur secara kronologis mengikuti alur layar/aksi pada rujukan. Jangan letakkan pengisian form, pilihan salin/copy, atau unggah dokumen sebelum langkah masuk halaman dan klik tombol yang membuka form jika rujukan menyebut urutan tersebut. "
+            "Jika rujukan memuat beberapa cara, jelaskan cara utama terlebih dahulu, lalu pisahkan alternatif pada bagian lain; jangan mencampur langkah dari cara berbeda dalam satu daftar bernomor. "
             "Tambahkan Catatan: setelah langkah atau bagian yang memiliki syarat penting, peringatan, atau konsekuensi yang disebutkan rujukan. "
             "Letakkan catatan setelah uraian, definisi, dan langkah-langkah pada bagian terkait, bukan sebelum langkah-langkah utama. "
             "Jika ada beberapa catatan untuk satu bagian atau cara, kumpulkan catatan tersebut berurutan di akhir bagian tersebut. "
