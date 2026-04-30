@@ -326,7 +326,9 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIn("lengkap dan detail sesuai isi rujukan", SYSTEM_INSTRUCTION)
         self.assertIn("SEMUA langkah dari awal hingga akhir", SYSTEM_INSTRUCTION)
         self.assertIn("Jangan mengawali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'", SYSTEM_INSTRUCTION)
-        self.assertIn("diawali **Catatan:**", SYSTEM_INSTRUCTION)
+        self.assertIn("format teks polos yang rapi", SYSTEM_INSTRUCTION)
+        self.assertIn("Jangan memakai heading markdown", SYSTEM_INSTRUCTION)
+        self.assertIn("diawali Catatan:", SYSTEM_INSTRUCTION)
         self.assertIn("Letakkan catatan setelah uraian", SYSTEM_INSTRUCTION)
         self.assertIn("kumpulkan catatan tersebut berurutan di akhir bagian", SYSTEM_INSTRUCTION)
         self.assertIn("jangan menambahkan catatan fiktif", SYSTEM_INSTRUCTION)
@@ -339,7 +341,9 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIn("Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'", prompt)
         self.assertIn("lengkap dan detail", prompt)
         self.assertIn("SEMUA langkah secara berurutan", prompt)
-        self.assertIn("Tambahkan **Catatan:**", prompt)
+        self.assertIn("format teks polos yang rapi", prompt)
+        self.assertIn("Jangan memakai heading markdown", prompt)
+        self.assertIn("Tambahkan Catatan:", prompt)
         self.assertIn("Letakkan catatan setelah uraian", prompt)
         self.assertIn("kumpulkan catatan tersebut berurutan di akhir bagian", prompt)
         self.assertIn("tidak bisa/gagal/error/kendala", prompt)
@@ -366,7 +370,9 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIn("Jangan awali jawaban dengan frasa 'Berdasarkan dokumen yang tersedia,'", prompt)
         self.assertIn("lengkap dan detail", prompt)
         self.assertIn("SEMUA langkah yang ada di rujukan", prompt)
-        self.assertIn("Tambahkan **Catatan:**", prompt)
+        self.assertIn("format teks polos yang rapi", prompt)
+        self.assertIn("Jangan memakai heading markdown", prompt)
+        self.assertIn("Tambahkan Catatan:", prompt)
         self.assertIn("Letakkan catatan setelah uraian", prompt)
         self.assertIn("kumpulkan catatan tersebut berurutan di akhir bagian", prompt)
         self.assertIn("Utamakan objek yang tertulis", prompt)
@@ -423,7 +429,7 @@ class RAGServiceTests(unittest.TestCase):
 
         self.assertEqual(self.rag._get_store_names(), ["fileSearchStores/test"])
 
-    def test_clean_answer_preserves_simple_markdown(self) -> None:
+    def test_clean_answer_normalizes_simple_markdown_to_plain_text(self) -> None:
         raw_answer = (
             "1. **Akses Halaman:** Pilih menu `RKP`, lalu klik *Tambah Data*.\n"
             "* Hak Akses: Admin mengatur role *viewer* dan *submit*.\n\n"
@@ -435,13 +441,13 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(
             cleaned,
             (
-                "1. **Akses Halaman:** Pilih menu `RKP`, lalu klik *Tambah Data*.\n"
-                "- Hak Akses: Admin mengatur role *viewer* dan *submit*.\n\n"
-                "**Catatan:** Jika data belum muncul, hubungi admin."
+                "1. Akses Halaman: Pilih menu RKP, lalu klik Tambah Data.\n"
+                "- Hak Akses: Admin mengatur role viewer dan submit.\n\n"
+                "Catatan: Jika data belum muncul, hubungi admin."
             ),
         )
 
-    def test_clean_answer_bolds_catatan_penting_label(self) -> None:
+    def test_clean_answer_normalizes_catatan_penting_label(self) -> None:
         raw_answer = (
             "Catatan penting:\n"
             "* Kode KRO dan nomenklatur akan terisi otomatis."
@@ -452,7 +458,7 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(
             cleaned,
             (
-                "**Catatan penting:**\n"
+                "Catatan penting:\n"
                 "- Kode KRO dan nomenklatur akan terisi otomatis."
             ),
         )
@@ -496,9 +502,9 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(
             cleaned,
             (
-                "1. **Akses Menu:** Pilih menu RKP.\n"
-                "2. **Tambah Data:** Klik tombol **Tambah Data**.\n\n"
-                "**Catatan:** Data akan berstatus `pending-add`."
+                "1. Akses Menu: Pilih menu RKP.\n"
+                "2. Tambah Data: Klik tombol Tambah Data.\n\n"
+                "Catatan: Data akan berstatus pending-add."
             ),
         )
 
@@ -535,10 +541,31 @@ class RAGServiceTests(unittest.TestCase):
             cleaned,
             (
                 "Untuk menambah Rincian Output (RO) di KRISNA, Anda dapat melakukannya dengan beberapa cara:\n\n"
-                "**Menambah Data Rincian Output Secara Manual:**\n"
-                "Pada halaman tabel Klasifikasi Rincian Output, lakukan *drill down*.\n"
+                "Menambah Data Rincian Output Secara Manual:\n"
+                "Pada halaman tabel Klasifikasi Rincian Output, lakukan drill down.\n"
                 "Setelah masuk ke halaman Rincian Output, klik tombol Tambah Data.\n"
                 "Akan muncul formulir Tambah Data."
+            ),
+        )
+
+    def test_clean_answer_removes_markdown_headings_and_separators(self) -> None:
+        raw_answer = (
+            "Pengecekan Tahapan Aplikasi\n\n"
+            "---\n\n"
+            "#### 1. Menambah Data RO Secara Langsung\n\n"
+            "Klik tombol **Tambah Data**.\n"
+            "Tunggu hingga status berubah menjadi *Success*."
+        )
+
+        cleaned = self.rag._clean_answer(raw_answer)
+
+        self.assertEqual(
+            cleaned,
+            (
+                "Pengecekan Tahapan Aplikasi\n\n"
+                "1. Menambah Data RO Secara Langsung\n\n"
+                "Klik tombol Tambah Data.\n"
+                "Tunggu hingga status berubah menjadi Success."
             ),
         )
 
